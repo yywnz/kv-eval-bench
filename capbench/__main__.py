@@ -296,7 +296,11 @@ def cmd_ifeval(args):
         rec = ifevalmod.summarize(m, run_dir, cli, limit=args.limit)
     except ifevalmod.IfevalError as e:
         sys.exit(str(e))
-    rec["lm_eval"]["max_gen_toks"] = mt or "官方默认 1280"
+
+    # 输出上限只信这一轮的记录。复用旧结果时尤其不能拿当前配置里的 max_tokens
+    # 去填——旧结果可能只给了 1280。
+    ifevalmod.apply_budget(rec["lm_eval"], from_results=bool(args.from_results),
+                           explicit=args.max_gen_toks, passed=mt)
 
     p = ifevalmod.sidecar_path(ROOT / "results", m.name, m.revision)
     p.parent.mkdir(parents=True, exist_ok=True)

@@ -197,13 +197,53 @@ def count_samples(run_dir: Path) -> int:
 
 # ---------------------------------------------------------------- 结果整理
 
+def _kv(v) -> dict:
+    """把 lm_eval 的 `k=v,k=v` 字符串或 dict 统一成 dict。"""
+    if isinstance(v, dict):
+        return v
+    out: dict = {}
+    if isinstance(v, str):
+        for part in v.split(","):
+            if "=" in part:
+                k, val = part.split("=", 1)
+                out[k.strip()] = val.strip()
+    return out
+
+
+def gen_budget(data: dict) -> tuple[int | None, str]:
+    """这次运行实际给了多少输出 token，以及这个数字的来源。
+
+    优先级：
+      1. `config.gen_kwargs` —— 命令行 `--gen_kwargs` 的运行时值，
+         这是我们真正传下去的那个数；
+      2. `configs.ifeval.generation_kwargs.max_gen_toks` —— 任务 yaml 的静态值，
+         只有在没传 `--gen_kwargs` 时才等于实际值；
+      3. 都没有 → (None, "unknown")。
+    绝不拿「当前 config/models.json 里的 max_tokens」来填——复用的可能是
+    上一轮 1280 的旧结果。
+    """
+    cfg = data.get("config") or {}
+    kv = _kv(cfg.get("gen_kwargs"))
+    if "max_gen_toks" in kv:
+        try:
+            return int(float(kv["max_gen_toks"])), "run"
+        except (TypeError, ValueError):
+            pass
+    tc = ((data.get("configs") or {}).get(TASK) or {})
+    gk = tc.get("generation_kwargs")
+    if isinstance(gk, dict) and isinstance(gk.get("max_gen_toks"), (int, float)):
+        return int(gk["max_gen_toks"]), "yaml"
+    return None, "unknown"
+
+
 def parse_results(path: Path) -> dict:
     """读 lm_eval 的 results.json。
 
-    返回 `{metrics, n, task_version}`：
-    - `metrics` 换算成百分点；
-    - `n` 取同一份 json 里的 `n-samples`，**不是**去目录里数文件——
-      复用目录时「最新结果」和「第一个样本文件」可能来自两轮不同的运行。
+    返回 `{metrics, n, task_version, lm_eval_version, max_gen_toks, budget_source}`：
+    - `metrics` 换算成百分点，**四项必须齐全**，缺一项就拒绝合并——
+      带着缺指标的报表比没有报表更糟；
+    - `n` 取同一份 json 里的 `n-samples`，不是去目录里数文件；
+    - 版本与输出上限取这份 json 自己的记录，不看当前配置。
     """
     data = json.loads(path.read_text(encoding="utf-8"))
     results = data.get("results") or {}
@@ -213,8 +253,12 @@ def parse_results(path: Path) -> dict:
         base = str(key).split(",")[0]
         if base in METRICS and isinstance(val, (int, float)):
             metrics[METRICS[base]] = round(float(val) * 100.0, 2)
-    if not metrics:
-        raise IfevalError(f"{path} 里没找到 ifeval 的指标键，实际有：{list(block)[:6]}")
+
+    missing = [v for v in METRICS.values() if v not in metrics]
+    if missing:
+        raise IfevalError(
+            f"{path} 缺指标 {missing}（拿到 {sorted(metrics)}）。"
+            "四项 prompt/instruction × strict/loose 必须齐全，不齐不合并。")
 
     n = None
     ns = (data.get("n-samples") or {})
@@ -229,26 +273,44 @@ def parse_results(path: Path) -> dict:
     versions = data.get("versions")
     if isinstance(versions, dict):
         ver = versions.get(TASK)
-    return {"metrics": metrics, "n": n, "task_version": ver}
+    budget, src = gen_budget(data)
+    return {"metrics": metrics, "n": n, "task_version": ver,
+            "lm_eval_version": data.get("lm_eval_version"),
+            "max_gen_toks": budget, "budget_source": src}
 
 
 def summarize(model, run_dir: Path, cli: str, limit: int | None = None) -> dict:
-    """结果和题数都取自同一个运行目录、同一份 results.json。"""
+    """结果、题数、版本、输出预算全部取自同一轮的产物。"""
     res = latest_results(run_dir)
     parsed = parse_results(res)
     y = yaml_meta(task_yaml(cli))
     # n-samples 缺失时才退回去数样本；此时目录是本次独立的，不会串轮
     n = parsed["n"] or count_samples(run_dir) or (limit or 0)
+
+    ver_file, ver_yaml = parsed["task_version"], y["version"]
+    task_ver = ver_file if ver_file not in (None, "") else ver_yaml
+    mismatch = bool(ver_file and ver_yaml and ver_yaml != "unknown"
+                    and str(ver_file) != str(ver_yaml))
+
     return {
         "task": TASK,
         "model": model.name,
         "revision": model.revision,
         "n": n,
         "metrics": parsed["metrics"],
-        "lm_eval": {"cli": cli, "version": cli_version(cli),
-                    "task_version": y["version"] or parsed["task_version"],
-                    "yaml_sha256_16": y["sha256_16"],
-                    "results_file": str(res)},
+        "lm_eval": {
+            "cli": cli,
+            # 这一轮用的是哪个版本：以结果文件自己的记录为准，文件没记才去问 CLI 环境
+            "version": parsed["lm_eval_version"] or cli_version(cli),
+            "task_version": task_ver,
+            "yaml_version": ver_yaml,
+            "version_mismatch": mismatch,
+            "yaml_sha256_16": y["sha256_16"],
+            "results_file": str(res),
+            # 输出上限只信这一次运行的记录；读不到就是 unknown
+            "max_gen_toks": parsed["max_gen_toks"],
+            "max_gen_toks_source": parsed["budget_source"],
+        },
         "run_dir": str(run_dir),
         "endpoint": model.base_url,
         "maxlen": model.maxlen,
@@ -306,6 +368,24 @@ def as_summary(rec: dict, maxlen: int | None = None) -> dict:
     }
 
 
+def apply_budget(lib: dict, *, from_results: bool,
+                 explicit: int | None = None, passed: int | None = None) -> None:
+    """决定 `lm_eval.max_gen_toks` 记什么。
+
+    - 复用旧结果（`from_results`）：改写 `lib` 前先看有没有显式指定；
+      否则只保留旧结果自己的记录，读不到就是 unknown。**绝不拿当前配置的
+      max_tokens 顶替**——旧结果可能只给了 1280。
+    - 本次新跑：结果文件没记下来、但我们确实传了 `--gen_kwargs`，才用传下去的值。
+    """
+    if from_results:
+        if explicit:
+            lib["max_gen_toks"], lib["max_gen_toks_source"] = explicit, "args"
+        elif lib.get("max_gen_toks") is None:
+            lib["max_gen_toks_source"] = "unknown"
+    elif lib.get("max_gen_toks") is None and passed:
+        lib["max_gen_toks"], lib["max_gen_toks_source"] = passed, "cli"
+
+
 def print_run(rec: dict) -> None:
     m = rec["metrics"]
     lib = rec.get("lm_eval") or {}
@@ -315,3 +395,14 @@ def print_run(rec: dict) -> None:
     print(f"  prompt-level loose   {m.get('prompt_loose')}%")
     print(f"  inst-level   strict  {m.get('inst_strict')}%")
     print(f"  inst-level   loose   {m.get('inst_loose')}%")
+
+    budget, src = lib.get("max_gen_toks"), lib.get("max_gen_toks_source")
+    label = {"run": "本次命令行", "yaml": "任务 yaml 默认",
+             "args": "手动指定", "unknown": "取不到"}.get(src, src)
+    print(f"  输出上限 {budget if budget else 'unknown'}（{label}）")
+    if not budget:
+        print("  ⚠ 这一轮没用 --gen_kwargs，也没留下记录：报表里会标 unknown。"
+              "重跑时加 --max-gen-toks，或不要用 --from-results。")
+    if lib.get("version_mismatch"):
+        print(f"  ⚠ 结果里的 task 版本 ({lib.get('task_version')}) 与当前安装的 "
+              f"ifeval.yaml ({lib.get('yaml_version')}) 不一致，口径可能已经变了。")

@@ -71,7 +71,8 @@ base 与 fp8 各存一份，不会互相覆盖；`result.py` 按当前 revision 
 | `lm_eval.version` | 校验器版本；它更新会改口径 |
 | `lm_eval.task_version` | 任务 yaml 里的 `metadata.version`（现在是 4.0） |
 | `lm_eval.yaml_sha256_16` | yaml 内容的哈希，比版本号更难糊弄 |
-| `lm_eval.max_gen_toks` | 本次实际给的输出上限 |
+| `lm_eval.max_gen_toks` | 本次实际给的输出上限；读不到就是 `unknown` |
+| `lm_eval.max_gen_toks_source` | 这个数字哪来的：`run`（本轮命令行）/ `yaml`（任务默认）/ `args`（手动指定）/ `unknown` |
 | `run_dir` | 这一轮 lm_eval 的输出目录 |
 | `n` | 题数，取自同一份 `results.json` 的 `n-samples` |
 
@@ -83,6 +84,12 @@ base 与 fp8 各存一份，不会互相覆盖；`result.py` 按当前 revision 
 - **每轮一个独立运行目录** `results/lm_eval/{model}/{时间戳}-{revision}/`，
   题数和指标都从这一轮的产物里取，不跨轮拼。
 - 早期不带 `@revision` 的旧侧车仍能读，但会校验里面的 `revision` 是否一致。
+- **输出上限不从当前配置猜**。`--from-results` 复用旧结果时，只认旧结果里
+  `config.gen_kwargs` 的记录（没有就退回任务 yaml 的静态值）；两者都没有就写
+  `unknown` 并在终端告警——`config/models.json` 里现在的 `max_tokens=16384`
+  跟上一轮实际给的 1280 没有关系。
+- **四项指标必须齐全**（prompt/instruction × strict/loose），缺任何一项直接
+  拒绝合并、报错退出。带着缺指标的报表比没有报表更容易误导。
 
 这三项任一变化，ifeval 的分数就不该和以前并列。
 

@@ -16,8 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from capbench.client import Model
-from capbench.ifeval import (IfevalError, as_summary, build_cmd, cli_version,
-                             parse_results, sidecar_path, summarize, yaml_meta)
+from capbench.ifeval import (IfevalError, apply_budget, as_summary, build_cmd,
+                             cli_version, gen_budget, parse_results,
+                             sidecar_path, summarize, yaml_meta)
 
 FAILED = []
 
@@ -71,8 +72,23 @@ with tempfile.TemporaryDirectory() as d:
 
     p2 = Path(d) / "results_y.json"
     p2.write_text(json.dumps({"results": {"ifeval": {
-        "prompt_level_strict_acc,none": 0.5}}}), encoding="utf-8")
+        "prompt_level_strict_acc,none": 0.5,
+        "prompt_level_loose_acc,none": 0.5,
+        "inst_level_strict_acc,none": 0.5,
+        "inst_level_loose_acc,none": 0.5}}}), encoding="utf-8")
     check("缺 n-samples 时 n 为空", parse_results(p2)["n"], None)
+
+    # 四项缺一项就拒绝合并（0.4.x 某些配置只报部分指标）
+    p3 = Path(d) / "results_partial.json"
+    p3.write_text(json.dumps({"results": {"ifeval": {
+        "prompt_level_strict_acc,none": 0.5,
+        "prompt_level_loose_acc,none": 0.5,
+        "inst_level_strict_acc,none": 0.5}}}), encoding="utf-8")
+    try:
+        parse_results(p3)
+        check("缺一项指标就拒绝", "没抛异常", "IfevalError")
+    except IfevalError:
+        check("缺一项指标就拒绝", "IfevalError", "IfevalError")
 
     bad = Path(d) / "results_bad.json"
     bad.write_text(json.dumps({"results": {"other": {"acc": 1.0}}}), encoding="utf-8")
@@ -81,6 +97,38 @@ with tempfile.TemporaryDirectory() as d:
         check("缺指标要报错", "没抛异常", "IfevalError")
     except IfevalError:
         check("缺指标要报错", "IfevalError", "IfevalError")
+
+# ---------------------------------------------------------------- 2b. 输出预算
+# config.gen_kwargs 是这次真正传下去的值
+data = {"config": {"gen_kwargs": "max_gen_toks=16384,temperature=0"},
+        "configs": {"ifeval": {"generation_kwargs": {"max_gen_toks": 1280}}}}
+check("预算取运行时 gen_kwargs", gen_budget(data), (16384, "run"))
+
+# 只跑 yaml 默认时，config 里没有 gen_kwargs
+data2 = {"config": {"gen_kwargs": None},
+         "configs": {"ifeval": {"generation_kwargs": {"max_gen_toks": 1280}}}}
+check("没有运行时时退回 yaml 默认", gen_budget(data2), (1280, "yaml"))
+
+# 两者都没有 → unknown，不猜
+check("都没有时为 unknown", gen_budget({"results": {}}), (None, "unknown"))
+
+# 复用旧结果：当前配置的 16384 绝对不能写进去
+lib = {"max_gen_toks": 1280, "max_gen_toks_source": "run"}
+apply_budget(lib, from_results=True, explicit=None, passed=16384)
+check("复用旧结果不覆盖已有记录", lib["max_gen_toks"], 1280)
+
+lib2 = {"max_gen_toks": None, "max_gen_toks_source": "unknown"}
+apply_budget(lib2, from_results=True, explicit=None, passed=16384)
+check("复用旧结果且无记录 → unknown", lib2["max_gen_toks"], None)
+check("来源标 unknown", lib2["max_gen_toks_source"], "unknown")
+
+lib3 = {"max_gen_toks": None, "max_gen_toks_source": "unknown"}
+apply_budget(lib3, from_results=True, explicit=4096, passed=16384)
+check("显式指定优先", lib3["max_gen_toks"], 4096)
+
+lib4 = {"max_gen_toks": None, "max_gen_toks_source": "unknown"}
+apply_budget(lib4, from_results=False, explicit=None, passed=16384)
+check("本次新跑用传下去的值", lib4["max_gen_toks"], 16384)
 
 # ---------------------------------------------------------------- 3. 版本来源
 with tempfile.TemporaryDirectory() as d:
@@ -99,10 +147,22 @@ with tempfile.TemporaryDirectory() as d:
     run = Path(d) / "run"
     (run / "sub").mkdir(parents=True)
     (run / "sub" / "results_old.json").write_text(json.dumps({
-        "results": {"ifeval": {"prompt_level_strict_acc,none": 0.60}},
+        "results": {"ifeval": {
+            "prompt_level_strict_acc,none": 0.60,
+            "prompt_level_loose_acc,none": 0.62,
+            "inst_level_strict_acc,none": 0.70,
+            "inst_level_loose_acc,none": 0.72}},
+        "config": {"gen_kwargs": "max_gen_toks=1280"},
+        "lm_eval_version": "0.4.10",
         "n-samples": {"ifeval": {"original": 541, "effective": 541}}}), encoding="utf-8")
     (run / "sub" / "results_new.json").write_text(json.dumps({
-        "results": {"ifeval": {"prompt_level_strict_acc,none": 0.70}},
+        "results": {"ifeval": {
+            "prompt_level_strict_acc,none": 0.70,
+            "prompt_level_loose_acc,none": 0.70,
+            "inst_level_strict_acc,none": 0.70,
+            "inst_level_loose_acc,none": 0.70}},
+        "config": {"gen_kwargs": "max_gen_toks=1280"},
+        "lm_eval_version": "0.4.13",
         "n-samples": {"ifeval": {"original": 20, "effective": 20}}}), encoding="utf-8")
     # 旧样本文件行数故意多，且路径排序在前
     (run / "a_samples_old.jsonl").write_text(
@@ -116,7 +176,9 @@ with tempfile.TemporaryDirectory() as d:
     rec = summarize(M, run, str(Path(d) / "no-such-cli"))
     check("题数与指标同源（取最新那轮）", rec["n"], 20)
     check("指标也是那一轮", rec["metrics"]["prompt_strict"], 70.0)
-    check("版本取不到就 unknown", rec["lm_eval"]["version"], "unknown")
+    check("版本取结果文件自己的记录", rec["lm_eval"]["version"], "0.4.13")
+    check("预算取结果文件的记录", rec["lm_eval"]["max_gen_toks"], 1280)
+    check("预算来源标 run", rec["lm_eval"]["max_gen_toks_source"], "run")
 
 # ---------------------------------------------------------------- 5. sidecar 分 revision
 check("文件名带 revision", sidecar_path("R", "glm", "fp8").name, "ifeval-glm@fp8.json")

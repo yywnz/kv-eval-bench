@@ -228,6 +228,7 @@ seed 新建，`randrange` 退化成 `floor(u·n)`，只覆盖每格前 `per_cell
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.2 | IFEval 输出上限只信本轮记录（`--from-results` 不再拿当前配置的 `max_tokens` 顶替）；四项指标缺一项即拒绝合并 |
 | 2.2.1 | 修 IFEval 封装三处隐患：版本改从被调用 CLI 的环境取（取不到记 `unknown`）；每轮独立运行目录、题数与指标同源；侧车文件名加 `@revision`，base/fp8 不再互相覆盖 |
 | 2.2.0 | 新增 `ifeval` 子命令：封装 `lm_eval` 调用（含 `tokenizer_backend=none`、输出上限、结果合并），IFEval 指标自动进报表并记录校验器版本与 yaml 哈希 |
 | 2.1.0 | 修复 LongBench 分层抽样的 RNG 重用（**划分重建，200 题换 88 题**）；`top_logprobs` 5→20；`report` 增 `maxlen` / `maxtok` 列并按 revision 过滤；新增 `compare`；抽样测试独立成 `tests/test_sampling.py` |
