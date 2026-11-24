@@ -53,22 +53,54 @@ def find_cli() -> str | None:
     return None
 
 
+def _sibling_pythons(exe: Path) -> list[Path]:
+    """CLI 所在环境里的解释器（venv 的 Scripts/ 或 bin/）。"""
+    cands = [exe.parent / "python.exe", exe.parent / "python",
+             exe.parent / "python3",
+             exe.parent.parent / "bin" / "python",
+             exe.parent.parent / "bin" / "python3"]
+    return [c for c in cands if c.exists()]
+
+
+def _site_roots(exe: Path) -> list[Path]:
+    """CLI 所在环境的 site-packages 候选。"""
+    venv = exe.parent.parent
+    roots = [venv / "Lib" / "site-packages", venv / "lib" / "site-packages"]
+    roots += sorted((venv / "lib").glob("python3.*/site-packages")) if (venv / "lib").exists() else []
+    return [r for r in roots if r.exists()]
+
+
 def cli_version(cli: str) -> str:
-    """先试当前解释器的包元数据，再顺着命令所在目录找 dist-info。"""
-    try:
-        from importlib.metadata import version
-        return version("lm-eval")
-    except Exception:
-        pass
+    """取**被调用那个 CLI 所在环境**的 lm-eval 版本。
+
+    不能读当前解释器的包元数据：`lm_eval` 命令可能属于另一个环境（本仓库正是
+    这种情况——CapBench 跑在 A 环境，`lm_eval` 装在 B 环境），那样记下的版本号
+    是错的，而版本号正是判断「分数能否并列」的依据。取不到就写 `unknown`，
+    宁可空着也不要填错的。
+    """
     exe = Path(cli).resolve()
-    roots = [exe.parent.parent / "Lib" / "site-packages",
-             exe.parent.parent / "lib" / "python3.13" / "site-packages",
-             exe.parent.parent / "lib" / "site-packages"]
-    for root in roots:
+
+    # ① 用 CLI 自己的解释器问它自己
+    for py in _sibling_pythons(exe):
+        try:
+            out = subprocess.run(
+                [str(py), "-c",
+                 "import importlib.metadata as m; print(m.version('lm-eval'))"],
+                capture_output=True, text=True, timeout=30)
+            got = (out.stdout or "").strip()
+            if out.returncode == 0 and got:
+                return got
+        except Exception:
+            continue
+
+    # ② 退一步：读 CLI 所在环境的 dist-info 目录名
+    for root in _site_roots(exe):
         for d in root.glob("lm_eval-*.dist-info"):
             ver = d.name.split("-")[1].replace(".dist", "")
             if ver:
                 return ver
+
+    # ③ 不猜
     return "unknown"
 
 
@@ -154,52 +186,80 @@ def latest_results(out_dir: Path) -> Path:
     return got[-1]
 
 
-def count_samples(out_dir: Path) -> int:
-    for p in out_dir.rglob("samples_*.jsonl"):
+def count_samples(run_dir: Path) -> int:
+    """只在**本次运行目录**里数样本，避免捡到上一次的旧文件。"""
+    total = 0
+    for p in Path(run_dir).rglob("samples_*.jsonl"):
         with p.open(encoding="utf-8") as f:
-            return sum(1 for line in f if line.strip())
-    return 0
+            total += sum(1 for line in f if line.strip())
+    return total
 
 
 # ---------------------------------------------------------------- 结果整理
 
 def parse_results(path: Path) -> dict:
-    """把 lm_eval 的 results.json 收成 {prompt_strict: 62.4, ...}（单位 pp）。"""
+    """读 lm_eval 的 results.json。
+
+    返回 `{metrics, n, task_version}`：
+    - `metrics` 换算成百分点；
+    - `n` 取同一份 json 里的 `n-samples`，**不是**去目录里数文件——
+      复用目录时「最新结果」和「第一个样本文件」可能来自两轮不同的运行。
+    """
     data = json.loads(path.read_text(encoding="utf-8"))
     results = data.get("results") or {}
     block = results.get(TASK) or (next(iter(results.values()), {}) if results else {})
-    got = {}
+    metrics = {}
     for key, val in block.items():
         base = str(key).split(",")[0]
         if base in METRICS and isinstance(val, (int, float)):
-            got[METRICS[base]] = round(float(val) * 100.0, 2)
-    if not got:
+            metrics[METRICS[base]] = round(float(val) * 100.0, 2)
+    if not metrics:
         raise IfevalError(f"{path} 里没找到 ifeval 的指标键，实际有：{list(block)[:6]}")
-    return got
+
+    n = None
+    ns = (data.get("n-samples") or {})
+    ns_block = ns.get(TASK) or (next(iter(ns.values()), {}) if ns else {})
+    for key in ("effective", "original"):
+        val = ns_block.get(key)
+        if isinstance(val, int) and val > 0:
+            n = val
+            break
+
+    ver = None
+    versions = data.get("versions")
+    if isinstance(versions, dict):
+        ver = versions.get(TASK)
+    return {"metrics": metrics, "n": n, "task_version": ver}
 
 
-def summarize(model, out_dir: Path, cli: str, limit: int | None = None) -> dict:
-    res = latest_results(out_dir)
-    metrics = parse_results(res)
+def summarize(model, run_dir: Path, cli: str, limit: int | None = None) -> dict:
+    """结果和题数都取自同一个运行目录、同一份 results.json。"""
+    res = latest_results(run_dir)
+    parsed = parse_results(res)
     y = yaml_meta(task_yaml(cli))
-    n = count_samples(out_dir) or (limit or 541)
+    # n-samples 缺失时才退回去数样本；此时目录是本次独立的，不会串轮
+    n = parsed["n"] or count_samples(run_dir) or (limit or 0)
     return {
         "task": TASK,
         "model": model.name,
         "revision": model.revision,
         "n": n,
-        "metrics": metrics,
+        "metrics": parsed["metrics"],
         "lm_eval": {"cli": cli, "version": cli_version(cli),
-                    "task_version": y["version"], "yaml_sha256_16": y["sha256_16"],
+                    "task_version": y["version"] or parsed["task_version"],
+                    "yaml_sha256_16": y["sha256_16"],
                     "results_file": str(res)},
+        "run_dir": str(run_dir),
         "endpoint": model.base_url,
         "maxlen": model.maxlen,
         "ran_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
 
-def sidecar_path(results_dir: Path, model_name: str) -> Path:
-    return Path(results_dir) / f"ifeval-{model_name}.json"
+def sidecar_path(results_dir: Path, model_name: str, revision: str = "default") -> Path:
+    """按 model@revision 分开存：base 与 fp8 的 IFEval 结果不能互相覆盖。"""
+    rev = str(revision or "default").replace("/", "_").replace("\\", "_")
+    return Path(results_dir) / f"ifeval-{model_name}@{rev}.json"
 
 
 def load_sidecar(path: Path) -> dict | None:
@@ -209,6 +269,17 @@ def load_sidecar(path: Path) -> dict | None:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def load_for(results_dir: Path, model_name: str, revision: str = "default") -> dict | None:
+    """取当前 revision 的 sidecar；兼容早期不带 @revision 的文件名。"""
+    want = str(revision or "default")
+    rec = load_sidecar(sidecar_path(results_dir, model_name, want))
+    if rec is None:
+        rec = load_sidecar(Path(results_dir) / f"ifeval-{model_name}.json")
+    if rec and str(rec.get("revision") or "default") != want:
+        return None
+    return rec
 
 
 # ---------------------------------------------------------------- 报告用

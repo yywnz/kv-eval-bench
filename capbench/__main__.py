@@ -278,8 +278,9 @@ def cmd_ifeval(args):
             sys.exit("没找到 lm_eval 命令。\n"
                      "  装：pip install lm-eval   （连带 torch，只为了跑 IFEval）\n"
                      "  已有输出可直接复用：--from-results <目录>")
-        run_dir = results_dir / m.name
+        run_dir = results_dir / m.name / f"{time.strftime('%Y%m%d-%H%M%S')}-{m.revision}"
         run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"运行目录：{run_dir}")
         cmd = ifevalmod.build_cmd(cli, m, run_dir, concurrency=args.concurrency,
                                   batch_size=args.batch_size, limit=args.limit,
                                   max_gen_toks=mt)
@@ -297,7 +298,7 @@ def cmd_ifeval(args):
         sys.exit(str(e))
     rec["lm_eval"]["max_gen_toks"] = mt or "官方默认 1280"
 
-    p = ifevalmod.sidecar_path(ROOT / "results", m.name)
+    p = ifevalmod.sidecar_path(ROOT / "results", m.name, m.revision)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
     ifevalmod.print_run(rec)
@@ -341,10 +342,8 @@ def cmd_report(args):
     for r in recs:
         by_task.setdefault(r["task"], []).append(r)
 
-    # IFEval 的判分在外部跑，结果单独存一份 sidecar；revision 对不上就不用
-    ext = ifevalmod.load_sidecar(ifevalmod.sidecar_path(Path(args.out), args.model))
-    if ext and str(ext.get("revision") or "default") != rev:
-        ext = None
+    # IFEval 的判分在外部跑，结果按 model@revision 单独存一份 sidecar
+    ext = ifevalmod.load_for(Path(args.out), args.model, rev)
 
     lines = ["task\tn\tscored\tacc\tse\tover\terr\tunparsed\tofficial%\tmaxlen\tmax_tokens"]
     print(f"{'task':<16}{'n':>5}{'scored':>8}{'acc':>9}{'se':>7}{'over':>6}"

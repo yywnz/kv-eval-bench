@@ -34,7 +34,7 @@ JSON 格式、标题格式、语言等）。
 一条命令，内部起 `lm_eval` 子进程并把结果并进同一张表：
 
 ```bash
-python -m capbench ifeval --model glm-flash          # → results/ifeval-glm-flash.json
+python -m capbench ifeval --model glm-flash          # → results/ifeval-glm-flash@default.json
 python result.py --model glm-flash                   # ifeval 行自动出现
 ```
 
@@ -61,7 +61,10 @@ pip install lm-eval        # 连带 torch，数 GB；只用 API 模式也一样
 
 ### 口径凭据
 
-IFEval 的分数取决于三样东西，`results/ifeval-{model}.json` 里都记了：
+侧车文件名是 `results/ifeval-{model}@{revision}.json`——**revision 进文件名**，
+base 与 fp8 各存一份，不会互相覆盖；`result.py` 按当前 revision 取对应那份。
+
+里面记了这些：
 
 | 字段 | 作用 |
 |---|---|
@@ -69,6 +72,17 @@ IFEval 的分数取决于三样东西，`results/ifeval-{model}.json` 里都记�
 | `lm_eval.task_version` | 任务 yaml 里的 `metadata.version`（现在是 4.0） |
 | `lm_eval.yaml_sha256_16` | yaml 内容的哈希，比版本号更难糊弄 |
 | `lm_eval.max_gen_toks` | 本次实际给的输出上限 |
+| `run_dir` | 这一轮 lm_eval 的输出目录 |
+| `n` | 题数，取自同一份 `results.json` 的 `n-samples` |
+
+几个刻意的做法，都是为了防止「记录了对不上号」：
+
+- **版本从被调用的那个 CLI 所在环境取**（用它自己的解释器问 `importlib.metadata`，
+  退一步读它的 `dist-info`）。当前解释器里也装了 lm-eval 时不读它——两个环境版本
+  可以不同。取不到就写 `unknown`，宁可空着也不填错的。
+- **每轮一个独立运行目录** `results/lm_eval/{model}/{时间戳}-{revision}/`，
+  题数和指标都从这一轮的产物里取，不跨轮拼。
+- 早期不带 `@revision` 的旧侧车仍能读，但会校验里面的 `revision` 是否一致。
 
 这三项任一变化，ifeval 的分数就不该和以前并列。
 
