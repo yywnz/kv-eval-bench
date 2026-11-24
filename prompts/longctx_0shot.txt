@@ -1,7 +1,10 @@
 Read the document and answer the multiple-choice question. Reply with the single letter of the correct option.
 
-Document:/n{context}/n/nQuestion: {question}
+Document:
+{context}
+
+Question: {question}
 
 {options}
 
-Answer:/n
+Answer:

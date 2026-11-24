@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "如果使用本基准，请按以下格式引用。"
 title: "CapBench: A Six-Dimension Capability Benchmark for Inference-Side Validation"
-version: "1.1.0"
+version: "1.2.0"
 date-released: "2026-11-24"
 license: MIT
 type: software

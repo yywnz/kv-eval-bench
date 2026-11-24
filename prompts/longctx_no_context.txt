@@ -4,4 +4,4 @@ Question: {question}
 
 {options}
 
-Answer:/n
+Answer:

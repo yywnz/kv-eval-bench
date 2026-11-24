@@ -70,8 +70,11 @@ def generate(model: Model, task: str, rows: list[dict],
                 rec.update({"skipped": "over_context", "correct": None, "scored": False,
                             "output_text": "", "latency_ms": 0.0, "finish_reason": "skipped"})
             else:
-                mt = model.max_tokens if (model.lock_max_tokens or row.get("max_tokens") is None) \
-                    else int(row["max_tokens"])
+                # 生成上限：锁定值优先；否则取「题目提示」与「模型默认」的较大者。
+                # 数据里的 1024 是按「只答一个字母」设的，对思考模型远远不够，
+                # 不能让它把模型配置压下去。
+                mt = (model.max_tokens if model.lock_max_tokens
+                      else max(int(row.get("max_tokens") or 0), model.max_tokens))
                 resp = client.complete([{"role": "user", "content": prompt}], mt)
                 s = score(row, resp)
                 usage = resp.get("usage") or {}

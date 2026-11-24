@@ -222,6 +222,8 @@ model,size,type,ifeval,mmlu_pro,gpqa_diamond,aime,livecodebench,longbench_v2,con
 
 1. **prompt 变体**：默认 `0shot`。用 `cot` 必须在报告里写明。
 2. **max_tokens**：思考模型 16384 以上。被截断的题全判错，`n_truncated` 不一定显眼。
+   `config/models.json` 里写了 `max_tokens` 即锁定；题目自带的 1024 类提示值不会覆盖它。
+   实测未锁定时的截断率：mmlu 18%、gpqa 69%、aime 50%。
 3. **thinking**：开或关都行，必须显式声明——同一个权重是两套分数。
 4. **温度**：默认 0（greedy）。要采样必须写明。
 5. **聚合方式**：AIME 这类小样本，`avg@1` 与 `avg@8` 差很远。
@@ -263,6 +265,7 @@ capbench/
 │   ├─ stats.py              配对统计（McNemar）
 │   ├─ client.py             OpenAI 兼容客户端
 │   └─ __main__.py           CLI：list / build / check / run / baseline / compare
+├─ tests/test_scoring.py     判分回归测试（python tests/test_scoring.py）
 ├─ splits/                   固定划分（进版本库）：每题 id + sha256
 ├─ docs/tasks/               六张数据卡
 ├─ data/                     （不进版本库）构建产物

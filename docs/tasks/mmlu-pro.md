@@ -28,6 +28,9 @@
 选项数不固定：413 题为 10 选项，其余为 3–9 选项。`options` 是文本列表，`answer` 是字母，
 渲染时按 A/B/C… 自动编号。数据里**不含拼好的 prompt**——模板在 `prompts/mc_0shot.txt`。
 
+判分时**选项字母表按 `len(options)` 生成**（`capbench/scoring.py::letters_for`）。
+早期实现写死 `ABCD`，导致 10 选项题答 E–J 一律判未解析，实测因此少 12pp。
+
 ## Prompt 模板
 
 `prompts/mc_0shot.txt`：
