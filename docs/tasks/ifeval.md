@@ -1,71 +1,69 @@
-# ifeval · 指令遵循
+# IFEval
 
-| | |
+**维度**：指令遵循 · **题数**：541（全量）· **判分**：外部（官方 verifier）
+
+## 来源
+
+| 项 | 值 |
 |---|---|
-| 任务 ID | `ifeval` |
-| 维度 | 指令遵循 |
-| 题数 | 541（全量） |
-| 来源 | [`google/IFEval`](https://huggingface.co/datasets/google/IFEval) |
+| 数据集 | [`google/IFEval`](https://huggingface.co/datasets/google/IFEval) |
+| 官方实现 | [`google-research/instruction_following_eval`](https://github.com/google-research/google-research/tree/master/instruction_following_eval) |
 | 许可 | Apache-2.0 |
-| 指标 | prompt-level strict accuracy（全部约束同时满足才算对） |
-| 判分 | **外部**，用官方 verifier / lm_eval |
-| 单题上限 | 1024 tokens |
+| 论文 | Zhou et al., 2023, [arXiv:2311.07911](https://arxiv.org/abs/2311.07911) |
 
-## 测什么
+## 官方评测口径
 
-「听不听话」，不是「答得对不对」。题面里带若干条**可程序验证**的约束，例如：
+IFEval 是四项里唯一有**官方可执行校验器**的——判分不是比对字符串，而是按
+`instruction_id_list` 里每个约束跑一段检查代码（24 类：字数、大小写、禁用词、
+JSON 格式、标题格式、语言等）。
 
-- 输出至少 300 词，且不许出现逗号
-- 全文用大写
-- 用 JSON 格式返回，含 3 个指定字段
-- 提到某个关键词恰好 2 次
-- 结尾必须是给定句子
+官方指标是两个维度叉乘：
 
-共 25 类约束（`instruction_id_list`），每题的约束条数不等。这项测的是模型能否在长输出中**全程保持**格式约束——量化、换 backend、换 chat template 之后，最容易在这里先崩。
+| 指标 | 含义 |
+|---|---|
+| prompt-level strict | 一道题的**全部**约束都满足才算对 |
+| prompt-level loose | 同上，但允许小范围格式差异 |
+| instruction-level strict | 按**单条约束**计：满足的约束数 / 总约束数 |
+| instruction-level loose | 同上，宽松版 |
+
+本仓库**不重新实现这些校验器**——24 类约束的边界条件很多，自己写只会引入 bug。
+判分交给 `lm_eval` 的 `ifeval` 任务，它内置官方实现。
+
+## 怎么跑
+
+```bash
+lm_eval --model local-completions \
+  --model_args base_url=http://127.0.0.1:30000/v1,model=<model>,tokenized_requests=False \
+  --tasks ifeval --num_fewshot 0 --batch_size 32
+```
+
+`python -m capbench check` 会把这条命令连同当前端点直接打印出来。
+
+`python pred.py` 遇到本任务会**跳过**（`judge: external`），因为本地没有判分器，
+跑了也出不了分。若只需要原始回答，加 `--tasks ifeval` 单独跑并保留 `pred/` 里的输出，
+再手工送进官方校验器。
 
 ## 数据格式
 
 ```json
 {"id": "ifeval-1a2b3c4d5e", "task": "ifeval", "kind": "instruct",
  "question": "...", "answer": "",
- "max_tokens": 1024,
- "meta": {"key": 1000, "instruction_id_list": ["length_constraints:number_words", "punctuation:no_comma"],
-          "kwargs": [{...}], "n_constraints": 2}}
+ "meta": {"key": 1000,
+          "instruction_id_list": ["length_constraints:number_words", "punctuation:no_comma"],
+          "kwargs": [{...}],
+          "n_constraints": 2}}
 ```
 
-`answer` 为空串是**故意的**：约束校验需要按 25 类规则逐条执行，交给官方实现比自行重写可靠。
-数据里**不含 prompt**——模板在 `prompts/instruct_0shot.txt`，生成时才拼接。
+`answer` 为空串是**故意的**：约束是否满足只能由校验器判定，没有「标准答案字符串」。
 
-## Prompt 模板
+## 与官方的偏差
 
-`prompts/instruct_0shot.txt`，内容就是 `{question}`——原始 prompt 原样送入，不加 system、不加 few-shot。
+| 项 | 官方 | 本仓库 |
+|---|---|---|
+| 题量 | 541 | 541（全量） |
+| 判分 | 官方校验器 | 同一实现，通过 `lm_eval` 调用 |
+| prompt | 原文直接送入 | 相同（`prompts/instruct_0shot.txt` 只含 `{question}`） |
 
-## 抽样策略
-
-全量 541 题，不做抽样——这项的价值在于覆盖全部约束类型，抽样会破坏覆盖面。
-
-## 判分口径
-
-```bash
-lm_eval --model local-completions \
-  --model_args base_url=http://127.0.0.1:30000/v1,model=<name>,tokenized_requests=False \
-  --tasks ifeval --num_fewshot 0 --batch_size 32
-```
-
-注意 lm_eval 用的是它自己下载的题库，与本仓库的 `data/ifeval.jsonl` 题面一致但**不共享文件**。本仓库这份用于离线查看、人工抽检、以及核对 id。
-
-## 已知限制
-
-- 单轮、单题，测不到多轮指令保持。
-- 约束是「可程序验证」的，因此偏机械；语义类要求（有用、准确）不在覆盖范围。
-- 模型若输出 markdown 包裹，部分约束（如精确字数）可能被 verifier 按严格口径判错。
-
-## 引用
-
-```bibtex
-@misc{zhou2023ifeval,
-  title={Instruction-Following Evaluation for Large Language Models},
-  author={Zhou, Jeffrey and others},
-  year={2023}, eprint={2311.07911}, archivePrefix={arXiv}
-}
-```
+**唯一需要对齐的是 chat template**：IFEval 的约束里有「全大写」「不加逗号」这类
+对表面形式敏感的要求，system prompt 或模板里多一句话都可能让模型改变行为。
+报告时须写明是否加了 system prompt。

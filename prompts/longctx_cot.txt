@@ -1,0 +1,14 @@
+Please read the following text and answer the questions below.
+
+<text>
+{context}
+</text>
+
+What is the correct answer to this question: {question}
+Choices:
+(A) {choice_A}
+(B) {choice_B}
+(C) {choice_C}
+(D) {choice_D}
+
+Let’s think step by step:

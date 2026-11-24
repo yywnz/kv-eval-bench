@@ -1,90 +1,67 @@
-# longbench_v2 · 长上下文
+# LongBench v2
 
-| | |
+**维度**：长上下文 · **题数**：200（从 503 题中分层抽取）· **判分**：本地
+
+## 来源
+
+| 项 | 值 |
 |---|---|
-| 任务 ID | `longbench_v2` |
-| 维度 | 长上下文 |
-| 题数 | 200（源自 503） |
-| 来源 | [`zai-org/LongBench-v2`](https://huggingface.co/datasets/zai-org/LongBench-v2) |
+| 数据集 | [`zai-org/LongBench-v2`](https://huggingface.co/datasets/zai-org/LongBench-v2)（官方 [`THUDM/LongBench-v2`](https://huggingface.co/datasets/THUDM/LongBench-v2)） |
+| 代码 | [`THUDM/LongBench`](https://github.com/THUDM/LongBench) 仓库根目录（v1 已移到 `LongBench/` 子目录） |
 | 许可 | MIT |
-| 指标 | accuracy（四选一） |
-| 判分 | 本地 |
-| 单题上限 | 1024 tokens |
+| 论文 | Bai et al., 2024, [arXiv:2412.15204](https://arxiv.org/abs/2412.15204) |
 
-## 测什么
+## 官方评测口径
 
-长文里的**深理解**，不是检索。题目由近 100 名高学历标注者出，上下文 8k–2M words，覆盖六类任务：
+官方 `pred.py` + `result.py`：
 
-| domain | 含义 |
-|---|---|
-| Single-Document QA | 单文档问答 |
-| Multi-Document QA | 多文档聚合 |
-| Long In-context Learning | 长文里的示例学习 |
-| Long-dialogue History Understanding | 长对话历史 |
-| Code Repository Understanding | 代码仓库理解 |
-| Long Structured Data Understanding | 长表格 / 结构化数据 |
+1. **0-shot**，单条 user 消息，模板原文见 `prompts/longctx_0shot.txt`
+   （`<text>` 包住文档，`Choices:` 下每行一个 `(A) …`）。
+2. 结尾固定一句：`Format your response as follows: "The correct answer is (insert answer here)".`
+3. 解码：`temperature=0.1`、`max_new_tokens=128`。
+4. 抽取（`pred.py::extract_answer`）：先匹配 `The correct answer is \(([A-D])\)`，
+   再退回 `The correct answer is ([A-D])`；抽不到记 `None`。
+5. 判分：`pred == answer`；报表为 Overall + Easy/Hard + Short/Medium/Long 六列。
+   `result.py` 里有个 `compensated` 开关会把 `None` 记 0.25，**默认关闭**，本仓库同样不用。
 
-**最难的设计在出题端**：先用三个模型自动初筛，三个模型都能答对的题直接淘汰。所以每道题至少有一个模型答错。
+CoT 变体（`--prompt-variant cot`）对应官方 `0shot_cot.txt`，官方此时会再发一次请求
+（`0shot_cot_ans.txt`）把推理结果转成答案；本仓库只发一次，直接对输出做抽取。
+
+## 本仓库的抽样
+
+- 按 `domain × length` 分层，每格蓄水池随机 14 题，总量上限 200（固定种子 2026）。
+- `length` 三档：short / medium / long；`difficulty` 两档：easy / hard。
+- 抽样用单遍流式 + 蓄水池，不把 465 MB 的原始文件全量载入内存。
 
 ## 数据格式
 
 ```json
 {"id": "lbv2-0f1e2d3c4b", "task": "longbench_v2", "kind": "mc",
  "context": "...", "question": "...", "options": ["...", "...", "...", "..."],
- "answer": "C", "max_tokens": 1024,
+ "answer": "C",
  "meta": {"domain": "Single-Document QA", "sub_domain": "...", "length": "medium",
           "difficulty": "hard", "ctx_chars": 412873}}
 ```
 
-`context` 是独立字段，不是拼进 prompt 的字符串——模板在 `prompts/longctx_0shot.txt`，
-渲染时才组装。`meta.ctx_chars` 用于超窗预检。
+`context` 是独立字段，不是拼好的 prompt。`meta.ctx_chars` 用于超窗预检与长度过滤。
 
-## Prompt 模板
+## 与官方的偏差
 
-`prompts/longctx_0shot.txt`：把文档、问题、选项依次拼好。
+| 项 | 官方 | 本仓库 |
+|---|---|---|
+| 题量 | 503 | 200（分层子集） |
+| 超窗处理 | **头尾各半截断**到 `maxlen` | **预检跳过**，记 `over_ctx`，不进分母 |
+| 输出上限 | 128 | 128；思考模型需用 `--max-tokens` 调大 |
+| CoT | 二次请求转答案 | 单次请求直接抽取 |
+| 报表 | Overall + 难度 + 长度 | 相同分组，另加 `over_ctx` 与 `official%` 两列 |
 
-另有 `longctx_no_context.txt`——**只给问题和选项、不给文档**，用于对照：
+**超窗这一条是实质性差异。** 官方截断会让超窗题「看起来答完了」，分数里看不出丢了什么；
+本仓库跳过并单独统计，代价是分母变小、与其他实现不可直接比。因此报告分数时
+**必须同时给出 `over_ctx` 数量和 `maxlen`**，否则无法判断分母是哪些题。
 
-```bash
-python pred.py --model <name> --tasks longbench_v2 --prompt-variant no_context
-```
+## 判分细节
 
-它的分数就是「不读文档」的基线；与正常分数的差值才是文档带来的真实增益。
-两者接近就说明这项任务能被常识蒙过去。
-
-## 抽样策略
-
-按 `domain × length` 分层（6 × 3 = 18 格，其中 `Long-dialogue History | long` 在源数据中为空，实际 17 格），每格**蓄水池随机抽 14 题**，总量上限 200。
-
-> 重做抽样时改的两点：
-> 1. 原来是「每格取前 12 条」，受源文件顺序影响；现在是蓄水池抽样，格内均匀且可复现。
-> 2. 每格从 12 提到 14，总量 150 → 200，让中长档的题量够做配对比较。
-
-`--per-cell` 可调。**不建议按长度档再砍**，除非你的上下文窗口装不下——砍了要重新算分母，报分数时说明。
-
-## 判分口径
-
-同 `mmlu_pro`：优先首 token logprob，拿不到走文本解析（`parse` 字段标明）。四选一随机基线 25%。
-
-## 已知限制
-
-- **全是四选一**，可以靠排除法和选项风格蒙分，不等于「读懂了」。要测有效窗口请配 RULER 类的变长检索任务。
-- 静态题库 + 公开数据，2024 年 12 月发布，**污染风险实际很高**。纵向对比有效，跨模型绝对排名要谨慎。
-- 单题最长约 2M words（约 300 万 token），**任何模型的窗口都装不下 Long 档的一部分**。超窗会直接报错，而报错题不进准确率分母——必须看 `n_error`，否则会拿到一个「只测了半套题」的分数。
-- 503 题本身样本不大；抽 200 后，四选一下的标准误约 3.2pp（p≈0.5 时）。
-
-## 与「以前从 LongBench v2 抽题」的关系
-
-早期做法是从这 503 题里随手抽一批做回归。那份抽样的问题是：格内不均匀、没记录 id、换一次就换了题，历史结果无法配对。
-
-本任务把抽到的 200 条 **id 全部写进 `splits/longbench_v2.json`**，重建时逐题比对即可确认是同一批题——这是做纵向对比的前提。
-
-## 引用
-
-```bibtex
-@misc{bai2024longbenchv2,
-  title={LongBench v2: Towards Deeper Understanding and Reasoning on Realistic Long-context Multitasks},
-  author={Bai, Yushi and others},
-  year={2024}, eprint={2412.15204}, archivePrefix={arXiv}
-}
-```
+- 抽取只认官方那句 `The correct answer is (X)`。模型若只写 `(C)` 或 `C`，
+  会退回通用规则并把 `official` 记为 false——`official_parse_rate` 低于 95% 时，
+  分数与公开榜单不可比。
+- 四选一随机基线 25%。200 题的标准误约 3.1pp，**差 2–3pp 以内不要当结论**。

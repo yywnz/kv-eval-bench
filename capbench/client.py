@@ -30,15 +30,18 @@ class Model:
     maxlen: int = 32768
     # 超窗预检的字符/token 换算比
     chars_per_token: float = 3.0
+    # 模型级解码覆盖（温度 / top_p），为空表示沿用任务官方值
+    decode: dict = field(default_factory=dict)
 
     def payload(self, messages: list[dict], max_tokens: int,
-                temperature: float | None = None) -> dict:
+                temperature: float | None = None,
+                top_p: float | None = None) -> dict:
         body = {
             "model": self.name,
             "messages": messages,
             "max_tokens": int(max_tokens),
             "temperature": self.temperature if temperature is None else temperature,
-            "top_p": self.top_p,
+            "top_p": self.top_p if top_p is None else top_p,
             "logprobs": True,
             "top_logprobs": 5,
             "stream": False,
@@ -79,8 +82,9 @@ class Client:
             return False
 
     def complete(self, messages: list[dict], max_tokens: int,
-                 temperature: float | None = None) -> dict:
-        body = self.m.payload(messages, max_tokens, temperature)
+                 temperature: float | None = None,
+                 top_p: float | None = None) -> dict:
+        body = self.m.payload(messages, max_tokens, temperature, top_p)
         t0 = time.perf_counter()
         out = self._post("/v1/chat/completions", body)
         dt = (time.perf_counter() - t0) * 1000.0

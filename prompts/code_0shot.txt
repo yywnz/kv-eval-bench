@@ -1,3 +1,0 @@
-Solve the following competitive programming problem in Python.
-
-{question}

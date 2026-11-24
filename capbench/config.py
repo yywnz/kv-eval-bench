@@ -58,9 +58,15 @@ def resolve(name: str, cfg: dict | None = None, *, base_url: str | None = None,
     if max_tokens:
         m.lock_max_tokens = True
     # 配置文件里显式写了 max_tokens 同样锁住。否则题目自带的 1024 会覆盖它，
-    # 思考模型的整批输出在思考阶段就被切断（实测 mmlu 截断率 18%、gpqa 69%）。
+    # 思考模型的整批输出在思考阶段就被切断。
     elif entry.get("max_tokens"):
         m.lock_max_tokens = True
+
+    # 模型级解码覆盖：不写就沿用任务官方值（见 tasks.py 的 decode）
+    if "temperature" in entry:
+        m.decode["temperature"] = float(entry["temperature"])
+    if "top_p" in entry:
+        m.decode["top_p"] = float(entry["top_p"])
 
     if thinking:
         ctk = dict(m.extra_body.get("chat_template_kwargs") or {})

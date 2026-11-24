@@ -2,7 +2,7 @@
  "task": "mmlu_pro",
  "seed": 2026,
  "n": 500,
- "sha256_16": "f43777146a1eecc7",
+ "sha256_16": "7b4bbfc953719800",
  "ids": [
   "mmlu_pro-0081f64184",
   "mmlu_pro-00fa632300",

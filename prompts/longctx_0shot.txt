@@ -1,10 +1,14 @@
-Read the document and answer the multiple-choice question. Reply with the single letter of the correct option.
+Please read the following text and answer the question below.
 
-Document:
+<text>
 {context}
+</text>
 
-Question: {question}
+What is the correct answer to this question: {question}
+Choices:
+(A) {choice_A}
+(B) {choice_B}
+(C) {choice_C}
+(D) {choice_D}
 
-{options}
-
-Answer:
+Format your response as follows: "The correct answer is (insert answer here)".

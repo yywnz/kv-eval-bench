@@ -1,5 +1,0 @@
-Solve the following competition math problem. The answer is an integer from 0 to 999.
-
-{question}
-
-End with: Answer: <integer>

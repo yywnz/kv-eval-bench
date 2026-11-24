@@ -1,88 +1,61 @@
-# gpqa_diamond · 科学推理
+# GPQA Diamond
 
-| | |
+**维度**：科学推理 · **题数**：198（全量）· **判分**：本地
+
+## 来源
+
+| 项 | 值 |
 |---|---|
-| 任务 ID | `gpqa_diamond` |
-| 维度 | 科学推理 |
-| 题数 | 198（全量） |
-| 来源 | [`hendrydong/GPQA_diamond`](https://huggingface.co/datasets/hendrydong/GPQA_diamond)（`Idavidrein/gpqa` 的社区镜像） |
+| 数据集 | [`Idavidrein/gpqa`](https://huggingface.co/datasets/Idavidrein/gpqa)（`diamond` 子集，**gated**） |
+| 备用源 | [`hendrydong/GPQA_diamond`](https://huggingface.co/datasets/hendrydong/GPQA_diamond)（公开镜像，无四选项） |
 | 许可 | CC BY 4.0 |
-| 指标 | accuracy（答案归一后匹配） |
-| 判分 | 本地 |
-| 单题上限 | 8192 tokens |
+| 论文 | Rein et al., 2023, [arXiv:2311.12022](https://arxiv.org/abs/2311.12022) |
 
-## 测什么
+## 关于「官方标准」
 
-博士级物理、化学、生物的多步推导。题目由领域专家出题并交叉审核，人类专家在不查资料时约 65%、限时约 50%。它是**目前对数值扰动最敏感**的一项：答案常是带有效数字的表达式（`10^-4 eV`、`3.7 M`），量化造成的低概率 token 偏差会直接反映在数字上。
+**GPQA 没有官方判分代码。** 官方只发布了数据集（gated）和论文里的评测设置：
 
-## 关于「自由作答」而不是四选一
+- 题目为四选一，要求模型逐步推理，**把最终答案写在 `\boxed{}` 里**；
+- 判分是「`\boxed{}` 内容与标准答案字符串比对」，不是选项字母；
+- 论文报的是 Diamond 子集准确率。
 
-官方 `Idavidrein/gpqa` 需要申请权限，本仓库用的是社区镜像，只提供题干与解答，没有四个选项。
+所以本项无法做到「与某个官方脚本逐行对齐」。本仓库的实现是：
 
-这**不是降级**：GPQA 原论文的评测协议就是自由作答 + 从输出中抽取答案，四选一是后续社区为了省事做的简化。自由作答的难度更高（要自己给出表达式，而不是认出来），也更接近实际使用。
+1. 题面保持论文写法：`What is the correct answer to this question: {question}` +
+   选项块（若有）+ `Reason step by step, and put your final answer within \boxed{}.`
+2. 解码：`temperature=0.5`（论文设置）。
+3. 抽取：取**最后一个** `\boxed{...}`，支持任意深度嵌套。
+4. 比对：归一后依次尝试——完全相等 → 数值集合（含科学计数折算，容差 0.5%）→
+   百分比与小数互认 → **双向**包含（短串需 ≥3 字符）。
 
-判分从解答的 `\boxed{}` 里取标准答案（198 题全部成功提取，0 回退），模型输出同样要求放进 `\boxed{}`。
+第 4 步的宽松化是必要的：198 题里 **127 题（64%）的标准答案带单位或文字**
+（`6.24x10^-7 M`、`1 and 2`、`A = NaHSO3, B = HCl`）。只判「标准答案被输出包含」时，
+模型少写单位会整批判错——实测最多造成 49pp 的低估。
+
+## 两种数据来源的差异
+
+`build` 先尝试官方 gated 数据，失败则回落到公开镜像：
+
+| 来源 | 选项 | 难度 | `meta.official_options` |
+|---|---|---|---|
+| `Idavidrein/gpqa` | 有（四选一） | 与官方一致 | `true` |
+| `hendrydong/GPQA_diamond` | **无** | 高于官方（要靠题面自己推出答案） | `false` |
+
+无选项时分数会显著偏低，**不可与公开榜单横比**。`result.py` 会读这个字段并在
+`results/{model}.json` 里标出；写报告时必须一并说明。
 
 ## 数据格式
 
 ```json
 {"id": "gpqa-4c3b2a1f0e", "task": "gpqa_diamond", "kind": "open", "match": "boxed",
- "question": "...", "answer": "10^-4 eV", "max_tokens": 8192,
- "meta": {"domain": "Physics", "answer_from_boxed": true}}
+ "question": "...", "options": ["...", "...", "...", "..."],
+ "answer": "10^-4 eV",
+ "meta": {"domain": "Physics", "official_options": true}}
 ```
-
-模板在 `prompts/open_0shot.txt`，要求把最终答案放进 `\boxed{}`。
-
-## Prompt 模板
-
-`prompts/open_0shot.txt`：
-
-```
-Answer the following graduate-level science question. Put the final answer in \boxed{}.
-
-{question}
-```
-
-## 抽样策略
-
-全量 198 题（Diamond 子集），不抽样。
-
-## 判分口径
-
-1. 从输出里取**最后一个** `\boxed{...}`（支持任意深度嵌套）；取不到则用全文。
-   取最后一个，是因为模型常在中间步骤也写 boxed。
-2. 归一化：去 `$`、`\(`、`\)`、花括号、`\,`、`\text` 等排版符；`\times`/`×`/`*` 统一为 `x`；
-   `1e-4` 写成 `10^-4`；去空格、转小写。
-3. 依次尝试四种等价判定，任一命中即判对：
-
-   | 判据 | 覆盖的情形 |
-   |---|---|
-   | 归一后完全相等 | 写法一致 |
-   | 数值集合相同（含科学计数折算，容差 0.5%） | `1,2,4` ↔ `1,\ 2,\ \text{and }4`、`6.24x10^-7 M` ↔ `6.24e-7` |
-   | 百分比与小数互认 | `44%` ↔ `0.439` |
-   | 双向包含（短串需 ≥3 字符） | 模型少写单位：`10^-4` ↔ `10^-4 eV` |
-
-   **双向**这一点是关键：只判「标准答案被输出包含」时，模型省略单位会被整批判错。
-   本批 198 题里有 127 题（64%）的标准答案带单位或文字，方向写反最多造成 49pp 的低估。
-
-归一化规则在 `capbench/scoring.py::_norm_math`，改它会改变历史分数，动手前先想清楚。
 
 ## 已知限制
 
-- **数值等价判断仍是字符串+数值级的**，`0.1` 与 `1/10`、`2√3` 与 `3.46` 不会互相匹配。
-  这类漏判对纵向对比无影响（四组配置同样漏判），但会让绝对分偏低 5pp 量级。
-- 64% 的标准答案是带单位或自由文本（`1 and 2`、`A = NaHSO3, B = HCl`），
-  语义等价无法靠规则穷尽。要绝对分请换官方四选一版本。
-- 自由作答需要模型遵守 `\boxed{}` 约定；不遵守时退化为全文匹配，容易漏判。`raw.jsonl` 的 `parse` 字段会标明 `boxed` 还是 `text`。
-- 官方四选一版本需自行申请 `Idavidrein/gpqa` 后替换本任务的数据构建函数。
-- 198 题，标准误约 3.5pp（p≈0.5 时），单次结果不足以分辨 3pp 以内的差异，配合配对比较使用。
-
-## 引用
-
-```bibtex
-@misc{rein2023gpqa,
-  title={GPQA: A Graduate-Level Google-Proof Q\&A Benchmark},
-  author={Rein, David and others},
-  year={2023}, eprint={2311.12022}, archivePrefix={arXiv}
-}
-```
+- **数值等价仍是字符串+数值级的**：`0.1` 与 `1/10`、`2√3` 与 `3.46` 不会互相匹配。
+  这类漏判对同模型不同配置的对比无影响，但会让绝对分偏低 5pp 量级。
+- 64% 的答案是自由文本，语义等价无法靠规则穷尽。要绝对分请用官方四选一数据并照论文口径人工复核。
+- 198 题的标准误约 3.5pp；逐题配对后能看住 2–3pp 的差异。

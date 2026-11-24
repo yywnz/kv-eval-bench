@@ -1,13 +1,14 @@
-"""任务定义：数据来源、抽样策略、题型。
+"""任务定义：数据来源、抽样策略、官方协议参数。
 
-每条任务一个 Task，`build()` 产出统一格式的行（**只存结构化字段，不拼 prompt**）：
+四条任务，行格式统一（**只存结构化字段，不拼 prompt**）：
 
-    {"id", "task", "kind", "question", "options"?, "context"?, "answer", "max_tokens", "meta"}
+    {"id", "task", "kind", "question", "options"?, "context"?, "answer", "meta"}
 
-prompt 在 `pred.py` 里按 `prompts/*.txt` 模板现场拼，换模板不用重建数据。
+prompt 在生成时按 `prompts/*.txt` 现场装配，换模板不用重建数据。
 
-抽样策略全部固定种子（默认 2026），并且**先收集再随机**——按流式顺序取前 N 条
-会在类别内引入系统性偏差（源文件常按难度或年份排序）。
+每条任务带 `decode`，字段取自官方实现（温度、top_p、输出上限），
+不写在这里的用 `Model` 的默认值。官方值与本仓库实际取值不一致时，
+数据卡里必须写明，`report.py` 也会把它打出来。
 """
 
 from __future__ import annotations
@@ -42,7 +43,6 @@ def build_ifeval(seed: int, **_) -> tuple[list[dict], dict]:
             "task": "ifeval", "kind": "instruct",
             "question": r["prompt"],
             "answer": "",
-            "max_tokens": 1024,
             "meta": {"key": r["key"],
                      "instruction_id_list": r["instruction_id_list"],
                      "kwargs": r["kwargs"],
@@ -58,6 +58,7 @@ def build_ifeval(seed: int, **_) -> tuple[list[dict], dict]:
 # ---------------------------------------------------------------- MMLU-Pro
 
 def build_mmlu_pro(seed: int, limit: int = 500, **_) -> tuple[list[dict], dict]:
+    """按 category 分层抽 limit 题；同时导出官方 5-shot 示例（validation 集）。"""
     pool: dict[str, list[dict]] = defaultdict(list)
     for r in _hf("TIGER-Lab/MMLU-Pro", "test"):
         pool[str(r.get("category", "na"))].append(r)
@@ -71,14 +72,13 @@ def build_mmlu_pro(seed: int, limit: int = 500, **_) -> tuple[list[dict], dict]:
     for cat in cats:
         items = sorted(pool[cat], key=lambda x: str(x.get("question_id")))
         for r in rng.sample(items, min(quota[cat], len(items))):
-            opts = [str(o) for o in r["options"]]
+            opts = [str(o) for o in r["options"] if str(o).strip() != "N/A"]
             rows.append({
                 "id": qid("mmlu_pro", str(r["question_id"]) + r["question"]),
                 "task": "mmlu_pro", "kind": "mc",
                 "question": r["question"],
                 "options": opts,
                 "answer": LETTERS[int(r["answer_index"])],
-                "max_tokens": 1024,
                 "meta": {"category": cat, "n_options": len(opts),
                          "src_index": r.get("question_id")},
             })
@@ -87,99 +87,71 @@ def build_mmlu_pro(seed: int, limit: int = 500, **_) -> tuple[list[dict], dict]:
     return rows, {"policy": f"按 category 分层均分，共 {limit} 题", "per_category": dist}
 
 
+def build_mmlu_exemplars(seed: int, per_cat: int = 5, **_) -> dict:
+    """官方 5-shot 示例：取自 validation 集，每类前 per_cat 条（官方按类取全部 5 条）。"""
+    out: dict[str, list[dict]] = defaultdict(list)
+    for r in _hf("TIGER-Lab/MMLU-Pro", "validation", streaming=False):
+        cat = str(r.get("category", "na"))
+        if len(out[cat]) >= per_cat:
+            continue
+        opts = [str(o) for o in r["options"] if str(o).strip() != "N/A"]
+        out[cat].append({
+            "question": r["question"],
+            "options": opts,
+            "answer": LETTERS[int(r["answer_index"])],
+            "cot": (r.get("cot_content") or "").strip(),
+        })
+    return {k: out[k] for k in sorted(out)}
+
+
 # ---------------------------------------------------------------- GPQA
 
 def build_gpqa(seed: int, **_) -> tuple[list[dict], dict]:
+    """优先取官方 gated 数据（含四选项）；取不到则回落到公开的无选项镜像。
+
+    两种来源的 `meta.official_options` 不同，报告里必须标明——无选项时的
+    难度高于官方设置，分数不可与榜单横比。
+    """
     from .scoring import extract_boxed
-    rows, fallback = [], 0
-    for r in _hf("hendrydong/GPQA_diamond", "test"):
-        ans = extract_boxed(r.get("solution") or "")
-        if not ans:
-            fallback += 1
-            tail = (r.get("solution") or "").strip().splitlines()
-            ans = tail[-1].strip() if tail else ""
-        rows.append({
-            "id": qid("gpqa", r["problem"]),
-            "task": "gpqa_diamond", "kind": "open", "match": "boxed",
-            "question": r["problem"],
-            "answer": ans,
-            "max_tokens": 8192,
-            "meta": {"domain": r.get("domain"), "answer_from_boxed": ans != ""},
-        })
+    rows: list[dict] = []
+    source = ""
+    try:
+        for r in _hf("Idavidrein/gpqa", "diamond"):
+            opts = [r.get(k) for k in ("Correct Answer", "Incorrect Answer 1",
+                                       "Incorrect Answer 2", "Incorrect Answer 3")]
+            rows.append({
+                "id": qid("gpqa", r["Question"]),
+                "task": "gpqa_diamond", "kind": "open", "match": "boxed",
+                "question": r["Question"],
+                "options": [str(o) for o in opts],
+                "answer": str(r["Correct Answer"]).strip(),
+                "meta": {"domain": r.get("Domain") or r.get("Subdomain"),
+                         "official_options": True},
+            })
+        source = "Idavidrein/gpqa（官方 gated）"
+    except Exception:
+        for r in _hf("hendrydong/GPQA_diamond", "test"):
+            ans = extract_boxed(r.get("solution") or "")
+            if not ans:
+                tail = (r.get("solution") or "").strip().splitlines()
+                ans = tail[-1].strip() if tail else ""
+            rows.append({
+                "id": qid("gpqa", r["problem"]),
+                "task": "gpqa_diamond", "kind": "open", "match": "boxed",
+                "question": r["problem"],
+                "options": [],
+                "answer": ans,
+                "meta": {"domain": r.get("domain"), "official_options": False},
+            })
+        source = "hendrydong/GPQA_diamond（公开镜像，无四选项）"
+
     rows.sort(key=lambda x: x["id"])
-    return rows, {"policy": "全量，未抽样（Diamond 子集）",
-                  "format": "自由作答 + \\boxed{} 抽取（官方论文口径，非四选一）",
-                  "answer_fallback_count": fallback}
-
-
-# ---------------------------------------------------------------- AIME
-
-def build_aime(seed: int, **_) -> tuple[list[dict], dict]:
-    rows, years = [], {}
-    for r in _hf("Maxwell-Jia/AIME_2024", "train", streaming=False):
-        rows.append({
-            "id": qid("aime", "2024:" + str(r["ID"]) + r["Problem"]),
-            "task": "aime", "kind": "numeric",
-            "question": r["Problem"],
-            "answer": str(r["Answer"]).strip(),
-            "max_tokens": 8192,
-            "meta": {"year": 2024, "problem_id": r["ID"]},
-        })
-    years[2024] = len(rows)
-    n2024 = len(rows)
-    for r in _hf("MathArena/aime_2025", "train", streaming=False):
-        rows.append({
-            "id": qid("aime", "2025:" + str(r["problem_idx"]) + r["problem"]),
-            "task": "aime", "kind": "numeric",
-            "question": r["problem"],
-            "answer": str(r["answer"]).strip(),
-            "max_tokens": 8192,
-            "meta": {"year": 2025, "problem_id": r.get("problem_idx"),
-                     "type": r.get("problem_type")},
-        })
-    years[2025] = len(rows) - n2024
-    rows.sort(key=lambda x: x["id"])
-    return rows, {"policy": "全量（2024 + 2025 两套各 30 题）",
-                  "by_year": years,
-                  "note": "样本量小，单题≈1.7pp，建议 avg@k 多次采样后取平均"}
-
-
-# ---------------------------------------------------------------- LiveCodeBench
-
-def build_livecodebench(seed: int, limit: int = 150, **_) -> tuple[list[dict], dict]:
-    from huggingface_hub import hf_hub_download
-    path = Path(hf_hub_download(repo_id="livecodebench/code_generation_lite",
-                                filename="test6.jsonl", repo_type="dataset"))
-    items = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
-    items.sort(key=lambda x: str(x.get("contest_date", "")), reverse=True)
-    picked = items[:limit]
-    rows = []
-    for r in picked:
-        rows.append({
-            "id": qid("lcb", str(r.get("question_id")) + (r.get("question_content") or "")[:200]),
-            "task": "livecodebench", "kind": "code",
-            "question": r.get("question_content") or "",
-            "answer": "",
-            "max_tokens": 4096,
-            "meta": {"question_id": r.get("question_id"),
-                     "title": r.get("question_title"),
-                     "platform": r.get("platform"),
-                     "difficulty": r.get("difficulty"),
-                     "contest_date": r.get("contest_date"),
-                     "starter_code": r.get("starter_code"),
-                     "public_test_cases": r.get("public_test_cases"),
-                     "private_test_cases": r.get("private_test_cases")},
-        })
-    dates = sorted(str(r["meta"]["contest_date"])[:10] for r in rows)
-    return rows, {"policy": f"按 contest_date 倒序取最近 {limit} 题",
-                  "release": "test6 / release_v6",
-                  "date_range": [dates[0], dates[-1]] if dates else [],
-                  "total_in_release": len(items)}
+    has_opts = all(r["meta"]["official_options"] for r in rows)
+    return rows, {"policy": "全量（Diamond 子集）", "source_used": source,
+                  "official_options": has_opts,
+                  "note": ("与官方设置一致（四选项 + boxed 字符串比对）" if has_opts else
+                           "无四选项，模型只能凭题面作答，难度高于官方设置；"
+                           "分数不可与公开榜单横比")}
 
 
 # ---------------------------------------------------------------- LongBench v2
@@ -206,7 +178,6 @@ def build_longbench_v2(seed: int, per_cell: int = 14, limit: int = 200,
             "question": r["question"],
             "options": [str(o) for o in opts],
             "answer": r["answer"],
-            "max_tokens": 1024,
             "meta": {"domain": key[0], "sub_domain": r.get("sub_domain"),
                      "length": key[1], "difficulty": r.get("difficulty"),
                      "ctx_chars": len(ctx)},
@@ -249,9 +220,10 @@ class Task:
     source_url: str
     license: str
     kind: str
-    shape: str                  # 决定用 prompts/ 下哪个模板
-    metric: str
+    shape: str                  # 决定用 prompts/ 下哪组模板
+    metric: str                 # 官方指标名
     judge: str                  # local / external
+    decode: dict                # 官方解码参数
     note: str
     build: Callable[..., tuple[list[dict], dict]] = field(repr=False, default=None)
     doc: str = ""
@@ -268,46 +240,38 @@ def _reg(**kw) -> None:
 _reg(name="ifeval", dimension="指令遵循", display="IFEval",
      source="google/IFEval", source_url="https://huggingface.co/datasets/google/IFEval",
      license="Apache-2.0", kind="instruct", shape="instruct",
-     metric="prompt-level strict accuracy", judge="external",
-     note="25 类可程序验证的约束；判分用官方 verifier",
+     metric="prompt-level strict accuracy / instruction-level accuracy",
+     judge="external",
+     decode={"temperature": 0.0, "max_tokens": 1280},
+     note="24 类可程序验证约束；判分用官方 verifier（lm_eval）",
      build=build_ifeval, doc="docs/tasks/ifeval.md")
 
 _reg(name="mmlu_pro", dimension="知识", display="MMLU-Pro",
      source="TIGER-Lab/MMLU-Pro", source_url="https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro",
-     license="MIT", kind="mc", shape="mc",
-     metric="accuracy（首 token 选项）", judge="local",
-     note="10 选项为主，非固定四选一",
+     license="MIT", kind="mc", shape="mmlu",
+     metric="accuracy（5-shot CoT，抽取 \"The answer is (X)\"）",
+     judge="local",
+     decode={"temperature": 0.1, "top_p": 0.95, "max_tokens": 8192},
+     note="官方为 5-shot CoT，示例取自 validation 集，每类 5 条",
      build=build_mmlu_pro, doc="docs/tasks/mmlu-pro.md")
 
 _reg(name="gpqa_diamond", dimension="科学推理", display="GPQA Diamond",
-     source="hendrydong/GPQA_diamond（Idavidrein/gpqa 的社区镜像）",
-     source_url="https://huggingface.co/datasets/hendrydong/GPQA_diamond",
-     license="CC BY 4.0", kind="open", shape="open",
-     metric="accuracy（答案归一后匹配）", judge="local",
-     note="自由作答 + \\boxed{} 抽取，与官方论文口径一致",
+     source="Idavidrein/gpqa（官方 gated）",
+     source_url="https://huggingface.co/datasets/Idavidrein/gpqa",
+     license="CC BY 4.0", kind="open", shape="gpqa",
+     metric="accuracy（\\boxed{} 抽取后归一比对）",
+     judge="local",
+     decode={"temperature": 0.5, "max_tokens": 8192},
+     note="论文口径：逐步推理，答案放 \\boxed{}；官方数据 gated，无权限时回落无选项镜像",
      build=build_gpqa, doc="docs/tasks/gpqa-diamond.md")
-
-_reg(name="aime", dimension="数学", display="AIME 2024+2025",
-     source="Maxwell-Jia/AIME_2024 + MathArena/aime_2025",
-     source_url="https://huggingface.co/datasets/MathArena/aime_2025",
-     license="CC BY 4.0 / MIT", kind="numeric", shape="numeric",
-     metric="accuracy（avg@k 推荐）", judge="local",
-     note="答案 0–999 整数；60 题，单题≈1.7pp",
-     build=build_aime, doc="docs/tasks/aime.md")
-
-_reg(name="livecodebench", dimension="代码", display="LiveCodeBench v6",
-     source="livecodebench/code_generation_lite（test6）",
-     source_url="https://huggingface.co/datasets/livecodebench/code_generation_lite",
-     license="MIT", kind="code", shape="code",
-     metric="pass@1（执行测试用例）", judge="external",
-     note="按月份发布新题，抗污染；判分需沙盒执行",
-     build=build_livecodebench, doc="docs/tasks/livecodebench.md")
 
 _reg(name="longbench_v2", dimension="长上下文", display="LongBench v2",
      source="zai-org/LongBench-v2", source_url="https://huggingface.co/datasets/zai-org/LongBench-v2",
      license="MIT", kind="mc", shape="longctx",
-     metric="accuracy（四选一）", judge="local",
-     note="6 类任务 × 3 档长度分层；单题最长约 2M words",
+     metric="accuracy（0-shot，抽取 \"The correct answer is (X)\"）",
+     judge="local",
+     decode={"temperature": 0.1, "max_tokens": 128},
+     note="官方 0-shot 输出上限 128 token；思考模型需调大，报告须注明",
      build=build_longbench_v2, doc="docs/tasks/longbench-v2.md")
 
 
@@ -316,9 +280,10 @@ def build_one(name: str, seed: int, **params) -> tuple[list[dict], dict]:
     rows, meta = task.build(seed, **params)
     meta = {"task": name, "dimension": task.dimension, "display": task.display,
             "shape": task.shape, "source": task.source, "license": task.license,
-            "n": len(rows), "metric": task.metric, "judge": task.judge, **meta}
+            "n": len(rows), "metric": task.metric, "judge": task.judge,
+            "official_decode": task.decode, **meta}
     return rows, meta
 
 
 # 固定顺序，CLI 与 pred.py 共用
-ORDER = ["ifeval", "mmlu_pro", "gpqa_diamond", "aime", "livecodebench", "longbench_v2"]
+ORDER = ["ifeval", "mmlu_pro", "gpqa_diamond", "longbench_v2"]

@@ -1,7 +1,7 @@
 {
   "suite": "capbench",
-  "version": "1.0.0",
-  "schema": 2,
+  "version": "1.2.0",
+  "schema": 3,
   "seed": 2026,
   "built_at": "2026-11-24",
   "tasks": {
@@ -13,8 +13,12 @@
       "source": "google/IFEval",
       "license": "Apache-2.0",
       "n": 541,
-      "metric": "prompt-level strict accuracy",
+      "metric": "prompt-level strict accuracy / instruction-level accuracy",
       "judge": "external",
+      "official_decode": {
+        "temperature": 0.0,
+        "max_tokens": 1280
+      },
       "policy": "全量，未抽样",
       "n_instruction_types": 25,
       "instruction_types": [
@@ -45,20 +49,25 @@
         "startend:quotation"
       ],
       "file": "ifeval.jsonl",
-      "size_mb": 0.28,
-      "sha256_16": "a29698ff97bc2dcb",
-      "build_seconds": 9.9
+      "size_mb": 0.27,
+      "sha256_16": "746480199b3a458c",
+      "build_seconds": 10.2
     },
     "mmlu_pro": {
       "task": "mmlu_pro",
       "dimension": "知识",
       "display": "MMLU-Pro",
-      "shape": "mc",
+      "shape": "mmlu",
       "source": "TIGER-Lab/MMLU-Pro",
       "license": "MIT",
       "n": 500,
-      "metric": "accuracy（首 token 选项）",
+      "metric": "accuracy（5-shot CoT，抽取 \"The answer is (X)\"）",
       "judge": "local",
+      "official_decode": {
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "max_tokens": 8192
+      },
       "policy": "按 category 分层均分，共 500 题",
       "per_category": {
         "biology": 36,
@@ -77,70 +86,32 @@
         "psychology": 35
       },
       "file": "mmlu_pro.jsonl",
-      "size_mb": 0.44,
-      "sha256_16": "f43777146a1eecc7",
-      "build_seconds": 7.9
+      "size_mb": 0.43,
+      "sha256_16": "7b4bbfc953719800",
+      "build_seconds": 11.3
     },
     "gpqa_diamond": {
       "task": "gpqa_diamond",
       "dimension": "科学推理",
       "display": "GPQA Diamond",
-      "shape": "open",
-      "source": "hendrydong/GPQA_diamond（Idavidrein/gpqa 的社区镜像）",
+      "shape": "gpqa",
+      "source": "Idavidrein/gpqa（官方 gated）",
       "license": "CC BY 4.0",
       "n": 198,
-      "metric": "accuracy（答案归一后匹配）",
+      "metric": "accuracy（\\boxed{} 抽取后归一比对）",
       "judge": "local",
-      "policy": "全量，未抽样（Diamond 子集）",
-      "format": "自由作答 + \\boxed{} 抽取（官方论文口径，非四选一）",
-      "answer_fallback_count": 0,
+      "official_decode": {
+        "temperature": 0.5,
+        "max_tokens": 8192
+      },
+      "policy": "全量（Diamond 子集）",
+      "source_used": "hendrydong/GPQA_diamond（公开镜像，无四选项）",
+      "official_options": false,
+      "note": "无四选项，模型只能凭题面作答，难度高于官方设置；分数不可与公开榜单横比",
       "file": "gpqa_diamond.jsonl",
       "size_mb": 0.13,
-      "sha256_16": "ae270660ef890550",
-      "build_seconds": 8.7
-    },
-    "aime": {
-      "task": "aime",
-      "dimension": "数学",
-      "display": "AIME 2024+2025",
-      "shape": "numeric",
-      "source": "Maxwell-Jia/AIME_2024 + MathArena/aime_2025",
-      "license": "CC BY 4.0 / MIT",
-      "n": 60,
-      "metric": "accuracy（avg@k 推荐）",
-      "judge": "local",
-      "policy": "全量（2024 + 2025 两套各 30 题）",
-      "by_year": {
-        "2024": 30,
-        "2025": 30
-      },
-      "note": "样本量小，单题≈1.7pp，建议 avg@k 多次采样后取平均",
-      "file": "aime.jsonl",
-      "size_mb": 0.04,
-      "sha256_16": "f0b712f284d9cb09",
-      "build_seconds": 8.7
-    },
-    "livecodebench": {
-      "task": "livecodebench",
-      "dimension": "代码",
-      "display": "LiveCodeBench v6",
-      "shape": "code",
-      "source": "livecodebench/code_generation_lite（test6）",
-      "license": "MIT",
-      "n": 150,
-      "metric": "pass@1（执行测试用例）",
-      "judge": "external",
-      "policy": "按 contest_date 倒序取最近 150 题",
-      "release": "test6 / release_v6",
-      "date_range": [
-        "2025-01-18",
-        "2025-04-06"
-      ],
-      "total_in_release": 175,
-      "file": "livecodebench.jsonl",
-      "size_mb": 100.35,
-      "sha256_16": "4f7b35edcead3272",
-      "build_seconds": 1.4
+      "sha256_16": "3abfa9f33bd224aa",
+      "build_seconds": 9.8
     },
     "longbench_v2": {
       "task": "longbench_v2",
@@ -150,8 +121,12 @@
       "source": "zai-org/LongBench-v2",
       "license": "MIT",
       "n": 200,
-      "metric": "accuracy（四选一）",
+      "metric": "accuracy（0-shot，抽取 \"The correct answer is (X)\"）",
       "judge": "local",
+      "official_decode": {
+        "temperature": 0.1,
+        "max_tokens": 128
+      },
       "policy": "按 domain × length 分层，每格蓄水池随机 14，总量上限 200",
       "by_length": {
         "long": 56,
@@ -180,8 +155,14 @@
       "source_total": 503,
       "file": "longbench_v2.jsonl",
       "size_mb": 184.76,
-      "sha256_16": "096c07bfaa2534e1",
-      "build_seconds": 111.1
+      "sha256_16": "d6748c4282b59005",
+      "build_seconds": 74.5
     }
+  },
+  "mmlu_exemplars": {
+    "file": "exemplars_mmlu_pro.json",
+    "categories": 14,
+    "per_category": 5,
+    "sha256_16": "1f40193d74ad833b"
   }
 }
