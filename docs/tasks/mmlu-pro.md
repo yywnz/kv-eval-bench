@@ -62,3 +62,13 @@
 - 官方抽取命中率记在 `summary.json` 的 `official_parse_rate`。它低于 95% 说明模型没按
   格式输出，此时分数与公开榜单不可比。
 - 选项字母表按 `len(options)` 生成，十选项题答 E–J 正常计分。
+
+## logprob 与 margin
+
+判分**先读回答正文**，抽不出字母时才退回首步 logprob，所以 logprob 的取值不影响准确率。
+它只用来算 `margin = logp(正确) − max(logp(错误))`，衡量「正确项被干扰项压过多近」。
+
+`top_logprobs` 默认 20（`config/models.json` 可改）。v2.0 写死 5，而本题最多 10 个选项，
+十选项题的 margin 只看到一半候选，`max(logp(错误))` 可能漏掉真正最强的干扰项，
+margin 偏乐观。修好之后 margin 才可用于「正确项置信度是否被压缩」这类判断；
+**margin 是辅助量，不要拿它当准确率用**。

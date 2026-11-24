@@ -156,43 +156,60 @@ def build_gpqa(seed: int, **_) -> tuple[list[dict], dict]:
 
 # ---------------------------------------------------------------- LongBench v2
 
-def build_longbench_v2(seed: int, per_cell: int = 14, limit: int = 200,
-                       **_) -> tuple[list[dict], dict]:
-    """按 domain × length 分层，每格用蓄水池随机抽 per_cell 题（单遍流式）。"""
-    cells: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    seen: dict[tuple[str, str], int] = defaultdict(int)
-    total = 0
+def reservoir_by_cell(stream, per_cell: int, seed: int):
+    """单遍流式蓄水池抽样。stream 产出 `(key, item)`，返回 `({key: [item]}, {key: 流内总数})`。
 
-    for r in _hf("zai-org/LongBench-v2", "train"):
-        opts = [r.get("choice_A"), r.get("choice_B"), r.get("choice_C"), r.get("choice_D")]
-        if any(o is None for o in opts):
-            continue
-        key = (str(r.get("domain", "na")), str(r.get("length", "na")))
+    每格（key）只建一个 RNG，从建格起持续取数；因此结果只取决于
+    `(seed, key, 流顺序)`，且每道题被选中概率相同（格内均匀随机）。
+
+    **不要**把 RNG 放进循环里每次新建：`random.Random(同一 seed)` 的第一次
+    `randrange` 会退化成 `floor(u·n)`（u 为该 seed 固定的第一个随机数），
+    只覆盖数据流前 `per_cell/u` 道题，后面的整段永远进不来。
+    """
+    cells: dict[tuple, list] = defaultdict(list)
+    seen: dict[tuple, int] = defaultdict(int)
+    rngs: dict[tuple, random.Random] = {}
+
+    for key, item in stream:
         seen[key] += 1
-        total += 1
-        ctx = r.get("context") or ""
-        item = {
-            "id": qid("lbv2", str(r.get("_id")) + r.get("question", "")),
-            "task": "longbench_v2", "kind": "mc",
-            "context": ctx,
-            "question": r["question"],
-            "options": [str(o) for o in opts],
-            "answer": r["answer"],
-            "meta": {"domain": key[0], "sub_domain": r.get("sub_domain"),
-                     "length": key[1], "difficulty": r.get("difficulty"),
-                     "ctx_chars": len(ctx)},
-        }
         bucket = cells[key]
         if len(bucket) < per_cell:
             bucket.append(item)
-        else:
-            # 标准蓄水池：j 同时决定「是否替换」和「替换哪个槽位」。
-            # 一次抽样必须只用一次 randrange，多抽一个数会改变选中集合，
-            # 导致与历史版本的 id 不一致。
-            rng = random.Random(f"{seed}:{key[0]}:{key[1]}")
-            j = rng.randrange(seen[key])
-            if j < per_cell:
-                bucket[j] = item
+            continue
+        rng = rngs.get(key)
+        if rng is None:
+            rng = rngs[key] = random.Random(f"{seed}:{key[0]}:{key[1]}")
+        # j 同时决定「是否替换」和「替换哪个槽位」，一次抽样只用一次 randrange
+        j = rng.randrange(seen[key])
+        if j < per_cell:
+            bucket[j] = item
+    return cells, dict(seen)
+
+
+def build_longbench_v2(seed: int, per_cell: int = 14, limit: int = 200,
+                       **_) -> tuple[list[dict], dict]:
+    """按 domain × length 分层，每格用蓄水池随机抽 per_cell 题（单遍流式）。"""
+    def stream():
+        for r in _hf("zai-org/LongBench-v2", "train"):
+            opts = [r.get("choice_A"), r.get("choice_B"), r.get("choice_C"),
+                    r.get("choice_D")]
+            if any(o is None for o in opts):
+                continue
+            key = (str(r.get("domain", "na")), str(r.get("length", "na")))
+            ctx = r.get("context") or ""
+            yield key, {
+                "id": qid("lbv2", str(r.get("_id")) + r.get("question", "")),
+                "task": "longbench_v2", "kind": "mc",
+                "context": ctx,
+                "question": r["question"],
+                "options": [str(o) for o in opts],
+                "answer": r["answer"],
+                "meta": {"domain": key[0], "sub_domain": r.get("sub_domain"),
+                         "length": key[1], "difficulty": r.get("difficulty"),
+                         "ctx_chars": len(ctx)},
+            }
+
+    cells, seen = reservoir_by_cell(stream(), per_cell, seed)
 
     rows = [x for k in sorted(cells) for x in cells[k]]
     rng = random.Random(seed)
@@ -203,10 +220,10 @@ def build_longbench_v2(seed: int, per_cell: int = 14, limit: int = 200,
     dist = defaultdict(int)
     for r in rows:
         dist[r["meta"]["length"]] += 1
-    return rows, {"policy": f"按 domain × length 分层，每格蓄水池随机 {per_cell}，总量上限 {limit}",
+    return rows, {"policy": f"按 domain × length 分层，每格蓄水池均匀随机 {per_cell}，总量上限 {limit}",
                   "by_length": dict(sorted(dist.items())),
                   "by_cell": {f"{k[0]} | {k[1]}": len(v) for k, v in sorted(cells.items())},
-                  "source_total": total}
+                  "source_total": sum(seen.values())}
 
 
 # ---------------------------------------------------------------- 注册表

@@ -32,6 +32,9 @@ class Model:
     chars_per_token: float = 3.0
     # 模型级解码覆盖（温度 / top_p），为空表示沿用任务官方值
     decode: dict = field(default_factory=dict)
+    # 首步 logprob 取前几个 token。MMLU-Pro 最多 10 个选项，5 个装不下所有字母，
+    # 会让 margin 只看到一半候选；20 是 OpenAI 兼容端点的常见上限。
+    top_logprobs: int = 20
 
     def payload(self, messages: list[dict], max_tokens: int,
                 temperature: float | None = None,
@@ -43,7 +46,7 @@ class Model:
             "temperature": self.temperature if temperature is None else temperature,
             "top_p": self.top_p if top_p is None else top_p,
             "logprobs": True,
-            "top_logprobs": 5,
+            "top_logprobs": int(self.top_logprobs),
             "stream": False,
         }
         body.update(self.extra_body or {})

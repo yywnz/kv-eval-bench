@@ -79,19 +79,38 @@ python result.py --model my-model --detail          # → result.txt + results/m
 ## 结果
 
 ```
-task              n  scored     acc     se  over  err unparsed  官方%  max_tokens
---------------------------------------------------------------------------------
-mmlu_pro        500     500   62.40   2.17     0    0        0   97.6       16384
-gpqa_diamond    198     186   38.89   3.58    12    0        3   94.1       16384
-longbench_v2    200     158   64.56   3.81    42    0        1   99.4       16384
+task              n  scored     acc     se  over  err unparsed  官方%   maxlen  maxtok
+---------------------------------------------------------------------------------------
+mmlu_pro        500     500   62.40   2.17     0    0        0   97.6   262144   16384
+gpqa_diamond    198     186   38.89   3.58    12    0        3   94.1   262144   16384
+longbench_v2    200     158   64.56   3.81    42    0        1   99.4   262144   16384
 ```
+
+（示例数值取自 2026-11 的 16 卡 PD 分离实跑；`longbench_v2` 那一行是 v2.1 之前的旧划分，
+新划分要重跑。列结构才是这一段要说明的东西。）
 
 | 列 | 含义 |
 |---|---|
-| `over` | 超窗跳过（不进分母）。**报分数必须同时给这一列和 `maxlen`**，否则分母不可知 |
+| `scored` | **有效评分题数**，也就是准确率的分母。`n − scored = over + err` |
+| `over` | 超窗跳过（不进分母）。报分数必须同时给这一列和 `maxlen`，否则分母不可知 |
+| `maxlen` | 该次运行使用的上下文上限，超窗判定和它直接绑定 |
 | `官方%` | 命中官方抽取规则的比例。低于 95% 说明模型没按格式输出，分数与公开榜单不可比 |
 | `unparsed` | 完全抽不出答案的题数（按错计） |
-| `max_tokens` | 实际使用的输出上限。低于官方值时须在报告里注明 |
+| `maxtok` | 实际使用的输出上限。低于官方值时须在报告里注明 |
+
+超窗比例超过 20% 时 `result.py` 会单独打一行告警，提示该分只代表跑通的那一段。
+
+### 跑基线 vs 改后
+
+```bash
+python pred.py   --model glm-flash --revision base --tasks all
+python pred.py   --model glm-flash --revision fp8  --tasks all   # 同一文件，多版本并存
+python -m capbench compare --model glm-flash --baseline-revision base --revision fp8
+```
+
+`compare` 按 `item_id` 逐题配对，输出每任务 Δpp、翻转数（对→错 / 错→对）与 McNemar 精确检验 p。
+基线默认从**同一个 pred 文件的另一个 revision** 取；跨模型比较用 `--baseline-model`
+或 `--baseline-pred`。`report` 也按 revision 过滤，不会把两次运行混成一个分数。
 
 榜单模板在 [`results/leaderboard.csv`](results/leaderboard.csv)。
 
@@ -105,6 +124,11 @@ longbench_v2    200     158   64.56   3.81    42    0        1   99.4       1638
 4. **chat template**：是否加 system prompt 会影响 IFEval（它有「全大写」「不许逗号」这类约束）。
 5. **超窗策略**：本仓库跳过并统计；官方 LongBench 是头尾截断。两者分母不同。
 6. **判分归属**：`ifeval` 用官方校验器，其余用本仓库实现。
+7. **revision**：`--revision base` / `--revision fp8` 写进同一个 `pred/{model}.jsonl`，
+   `report` 与 `compare` 都按 revision 取数；不声明 revision 就报「默认」那一份。
+8. **划分版本**：`splits/*.json` 里的 `sha256_16` 是「同一批题」的凭据。
+   v2.1 重建过 `longbench_v2` 划分（`d6748c42…` → `5d4df6a4…`），
+   **跨划分的分数不可放进同一张表**。
 
 `results/{model}.json` 会记录 `endpoint / maxlen / 每任务的 decode / 模板名`。
 
@@ -129,10 +153,11 @@ capbench/
 │   ├─ runner.py             生成循环与汇总
 │   ├─ stats.py              标准误、配对检验
 │   ├─ client.py             OpenAI 兼容客户端
-│   └─ __main__.py           CLI：list / build / check / eval / report
+│   └─ __main__.py           CLI：list / build / check / eval / report / compare
 ├─ splits/                   固定划分（进版本库）：id 列表 + sha256 + 5-shot 示例
 ├─ docs/tasks/               四张数据卡（官方口径、抽样、偏差）
 ├─ tests/test_scoring.py     判分回归测试
+├─ tests/test_sampling.py    抽样回归测试（均匀性 / 确定性）
 ├─ data/                     （不进版本库）构建产物
 └─ results/                  聚合结果 + leaderboard.csv
 ```
@@ -168,6 +193,13 @@ capbench/
 **为什么不静默截断超窗题。** LongBench 官方是头尾各半截断，保证跑得完；本仓库改为
 预检跳过并单独统计 `over_ctx`。截断会让超窗题「看起来答完了」，分数里看不出丢了什么。
 
+**为什么抽样宁可重来一遍。** v2.0 的分层蓄水池把 RNG 建在循环里，每个 item 都用同一
+seed 新建，`randrange` 退化成 `floor(u·n)`，只覆盖每格前 `per_cell/u` 道题。按格子量：
+旧划分选中的题在格子内的相对位置中位数 23%，53% 落在格子前四分之一；修复后中位数 55%，
+四分段 27% / 20% / 24% / 30%。这属于「声称随机、实际取头部」——看分数看不出来，只能翻
+代码看出来。v2.1 改为每格一个持久 RNG 并重建划分（换了 88 题），旧分数作废。
+抽样逻辑现在有回归测试（`tests/test_sampling.py`）。
+
 **为什么不设通过阈值。** 那是使用方的决策。本仓库只保证「同一批题、同一口径」。
 
 ---
@@ -182,6 +214,15 @@ capbench/
 | Agent 多轮工具调用 | 工具选择、参数正确性、状态维护未覆盖 |
 | 中文母语评测 | 无 C-Eval / CMMLU 类专项 |
 | 性能 | 吞吐 / 延迟 / 显存不在本仓库范围 |
+
+---
+
+## 版本
+
+| 版本 | 变更 |
+|---|---|
+| 2.1.0 | 修复 LongBench 分层抽样的 RNG 重用（**划分重建，200 题换 88 题**）；`top_logprobs` 5→20；`report` 增 `maxlen` / `maxtok` 列并按 revision 过滤；新增 `compare`；抽样测试独立成 `tests/test_sampling.py` |
+| 2.0.0 | 四项任务定型，判分对齐各数据集官方实现（去掉 AIME / LiveCodeBench） |
 
 ---
 

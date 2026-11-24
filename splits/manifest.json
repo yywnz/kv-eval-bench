@@ -1,6 +1,6 @@
 {
   "suite": "capbench",
-  "version": "1.2.0",
+  "version": "2.1.0",
   "schema": 3,
   "seed": 2026,
   "built_at": "2026-11-24",
@@ -127,7 +127,7 @@
         "temperature": 0.1,
         "max_tokens": 128
       },
-      "policy": "按 domain × length 分层，每格蓄水池随机 14，总量上限 200",
+      "policy": "按 domain × length 分层，每格蓄水池均匀随机 14，总量上限 200",
       "by_length": {
         "long": 56,
         "medium": 76,
@@ -154,9 +154,10 @@
       },
       "source_total": 503,
       "file": "longbench_v2.jsonl",
-      "size_mb": 184.76,
-      "sha256_16": "d6748c4282b59005",
-      "build_seconds": 74.5
+      "size_mb": 209.5,
+      "sha256_16": "5d4df6a45cca3fdd",
+      "build_seconds": 65.2,
+      "note": "v2.1 重建：修复蓄水池「每个 item 重建同种子 RNG」的缺陷，200 题中换掉 88 题，sha256_16 由 d6748c4282b59005 变为 5d4df6a45cca3fdd；v2.0 的分数不可与此混用"
     }
   },
   "mmlu_exemplars": {

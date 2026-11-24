@@ -5,6 +5,8 @@
   python -m capbench check  --model X        检查数据、模板与端点
   python -m capbench eval   --model X        跑一遍 → pred/{model}.jsonl
   python -m capbench report --model X        汇总 → result.txt + results/{model}.json
+  python -m capbench compare --model X --baseline-revision base --revision fp8
+                                             两个 revision 逐题配对 → Δpp / 翻转 / p
 
 日常用 `pred.py` / `result.py`（两个薄包装，参数同名）。
 """
@@ -25,6 +27,7 @@ from .client import Client, Model
 from .prompts import render
 from .runner import (filter_length, generate, group_by, load_exemplars,
                      load_rows, summarize)
+from .stats import paired
 from .tasks import ORDER, TASKS, build_mmlu_exemplars, build_one
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -267,19 +270,32 @@ def cmd_report(args):
     if not path.exists():
         sys.exit(f"找不到 {path}，先跑 eval/pred.py")
     recs = _load(path)
-    by_task: dict[str, list[dict]] = {}
-    for r in recs:
-        by_task.setdefault(r["task"], []).append(r)
 
     # report 只读本地文件，模型没注册也要能出分
     try:
         m = _model(args)
     except KeyError:
         m = Model(name=args.model, revision=args.revision or "default")
-    lines = ["task\tn\tscored\tacc\tse\tover\terr\tunparsed\tofficial%\tmax_tokens"]
+
+    # 同一个 pred 文件里可能并存多个 revision（base / fp8 / int4）：
+    # 不筛就会把几次运行混成一个分数，必须按 revision 取一份。
+    revs = sorted({str(r.get("revision") or "default") for r in recs})
+    rev = args.revision or m.revision
+    if len(revs) > 1:
+        if rev not in revs:
+            sys.exit(f"{path} 里有多个 revision {revs}，用 --revision 指定其中一个")
+        print(f"注意：{path} 含 {len(revs)} 个 revision {revs}，本次只统计 {rev}\n")
+    elif revs:
+        rev = revs[0]
+    recs = [r for r in recs if str(r.get("revision") or "default") == rev]
+    by_task: dict[str, list[dict]] = {}
+    for r in recs:
+        by_task.setdefault(r["task"], []).append(r)
+
+    lines = ["task\tn\tscored\tacc\tse\tover\terr\tunparsed\tofficial%\tmaxlen\tmax_tokens"]
     print(f"{'task':<16}{'n':>5}{'scored':>8}{'acc':>9}{'se':>7}{'over':>6}"
-          f"{'err':>5}{'unparsed':>10}{'官方%':>8}")
-    print("-" * 84)
+          f"{'err':>5}{'unparsed':>10}{'官方%':>8}{'maxlen':>9}{'maxtok':>8}")
+    print("-" * 93)
     summaries = []
     for name in _tasks(args.tasks):
         rs = by_task.get(name)
@@ -291,12 +307,20 @@ def cmd_report(args):
         acc = "-" if s["accuracy"] is None else f"{s['accuracy']}"
         print(f"{name:<16}{s['n']:>5}{s['n_scored']:>8}{acc:>9}{s['se_pp'] or '-':>7}"
               f"{s['over_ctx']:>6}{s['n_error']:>5}{s['n_unparsed']:>10}"
-              f"{s['official_parse_rate'] or '-':>8}")
+              f"{s['official_parse_rate'] or '-':>8}{s['maxlen']:>9}"
+              f"{(s['decode'] or {}).get('max_tokens', '-'):>8}")
         if s["accuracy"] is not None:
             lines.append(f"{name}\t{s['n']}\t{s['n_scored']}\t{s['accuracy']}\t"
                          f"{s['se_pp']}\t{s['over_ctx']}\t{s['n_error']}\t"
                          f"{s['n_unparsed']}\t{s['official_parse_rate']}\t"
-                         f"{(s['decode'] or {}).get('max_tokens')}")
+                         f"{s['maxlen']}\t{(s['decode'] or {}).get('max_tokens')}")
+
+    # 超窗题不进分母：比例一高，分数只代表跑通的那一段，必须当面说清
+    thin = [s for s in summaries if s["n"] and s["over_ctx"] / s["n"] > 0.2]
+    for s in thin:
+        print(f"\n⚠ {s['task']}: {s['over_ctx']}/{s['n']} 题超出 maxlen={s['maxlen']}，"
+              f"未参与计分；有效评分 {s['n_scored']} 题。"
+              f"报数必须同时给出超窗数与 maxlen。")
 
     if args.detail:
         for s in summaries:
@@ -319,6 +343,78 @@ def cmd_report(args):
         "tasks": summaries,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n表格 -> {args.table}\n明细 -> {out_json}")
+    return 0
+
+
+# ---------------------------------------------------------------- compare
+
+def _side(path: Path, rev: str | None, flag: str) -> tuple[list[dict], str]:
+    if not path.exists():
+        sys.exit(f"找不到 {path}，先跑 pred.py")
+    recs = _load(path)
+    revs = sorted({str(r.get("revision") or "default") for r in recs})
+    if not rev:
+        if len(revs) != 1:
+            sys.exit(f"{path} 里有多个 revision {revs}，用 --{flag}revision 指定")
+        rev = revs[0]
+    got = [r for r in recs if str(r.get("revision") or "default") == rev]
+    if not got:
+        sys.exit(f"{path} 里没有 revision={rev} 的记录（现有 {revs}）")
+    return got, rev
+
+
+def cmd_compare(args):
+    """两个 revision（或两个模型）逐题配对比较。
+
+    基线默认取同一个 pred 文件里另一个 revision：base 与 fp8 都写在
+    pred/{model}.jsonl，各任务各自按 item_id 配对。
+    """
+    pred = Path(args.pred)
+    new_path = pred / f"{args.model}.jsonl" if pred.is_dir() else pred
+    base_model = args.baseline_model or args.model
+    base_path = (Path(args.baseline_pred) if args.baseline_pred
+                 else (pred / f"{base_model}.jsonl" if pred.is_dir() else pred))
+
+    new, new_rev = _side(new_path, args.revision, "revision")
+    base, base_rev = _side(base_path, args.baseline_revision, "baseline-")
+    if (base_model, base_rev) == (args.model, new_rev) and base_path == new_path:
+        sys.exit("基线和本次是同一份记录，换一个 --baseline-revision 或 --baseline-model")
+
+    print(f"基线 {base_model}@{base_rev}  ←→  本次 {args.model}@{new_rev}\n")
+    print(f"{'task':<16}{'paired':>7}{'base':>8}{'new':>8}{'Δpp':>8}"
+          f"{'翻转':>10}{'p':>9}")
+    print("-" * 66)
+    rows = []
+    for name in _tasks(args.tasks):
+        b = [r for r in base if r["task"] == name]
+        n = [r for r in new if r["task"] == name]
+        if not b or not n:
+            print(f"{name:<16}{'-':>7}  一侧无数据")
+            continue
+        s = paired(b, n)
+        if not s.get("n_paired"):
+            print(f"{name:<16}{0:>7}  没有可配对的题（两边都判分的交集为空）")
+            continue
+        flip = f"{s['flip_good']}+/{s['flip_bad']}-"
+        print(f"{name:<16}{s['n_paired']:>7}{s['acc_base']:>8.2f}{s['acc_new']:>8.2f}"
+              f"{s['delta_pp']:>+8.2f}{flip:>10}{s['mcnemar_p']:>9.3f}")
+        rows.append({"task": name, **s})
+
+    if rows:
+        print("\nΔpp 为正表示本次更好；翻转为「对→错 / 错→对」的题数，"
+              "p 是 McNemar 精确检验（双侧）。")
+        out = Path(args.out) if args.out else (
+            ROOT / "results" / f"compare-{args.model}@{new_rev}-vs-{base_model}@{base_rev}.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({
+            "model": args.model, "revision": new_rev,
+            "baseline_model": base_model, "baseline_revision": base_rev,
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "tasks": rows,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"明细 -> {out}")
+    else:
+        print("\n没有任何任务可比。")
     return 0
 
 
@@ -378,6 +474,16 @@ def main(argv=None):
     r.add_argument("--table", default=str(ROOT / "result.txt"))
     r.add_argument("--detail", action="store_true")
     r.set_defaults(fn=cmd_report)
+
+    p = sub.add_parser("compare", help="两个 revision / 两个模型逐题配对比较")
+    common(p)
+    p.add_argument("--pred", default=str(ROOT / "pred"))
+    p.add_argument("--baseline-revision", default=None,
+                   help="基线 revision。与 --revision 之外的另一份记录，如 base")
+    p.add_argument("--baseline-model", default=None, help="基线模型名，默认同 --model")
+    p.add_argument("--baseline-pred", default=None, help="基线 pred 文件或目录")
+    p.add_argument("--out", default=None)
+    p.set_defaults(fn=cmd_compare)
 
     args = ap.parse_args(argv)
     try:

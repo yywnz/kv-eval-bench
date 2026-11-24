@@ -9,6 +9,7 @@
     temperature     默认 0
     extra_body      原样并入请求体，如 {"chat_template_kwargs": {"thinking": true}}
     chars_per_token 超窗预检用的换算比，默认 3.0（英文按字符数估 token）
+    top_logprobs    首步 logprob 取前几个 token，默认 20（MMLU-Pro 最多 10 选项）
 
 命令行参数优先级高于配置文件；给 `--base-url` 就能用未注册的模型名临时跑。
 """
@@ -53,6 +54,7 @@ def resolve(name: str, cfg: dict | None = None, *, base_url: str | None = None,
         extra_body=dict(entry.get("extra_body") or {}),
         maxlen=int(entry.get("maxlen") or 32768),
         chars_per_token=float(entry.get("chars_per_token") or 3.0),
+        top_logprobs=int(entry.get("top_logprobs") or 20),
     )
     # 命令行给了 max_tokens 就锁住，忽略题目自带值
     if max_tokens:

@@ -6,6 +6,7 @@
     "max_tokens      生成上限。写了即锁定，覆盖题目自带值与任务官方值",
     "temperature     top_p  写入即覆盖任务官方值",
     "chars_per_token 超窗预检的字符/token 换算比：英文约 4，中英混排 2–3",
+    "top_logprobs   首步 logprob 取前几个 token，默认 20；MMLU-Pro 最多 10 个选项，取 5 会看不全",
     "extra_body      原样并入请求体，例如 {\"chat_template_kwargs\": {\"thinking\": true}}",
     "命令行 --base-url 可直接覆盖，不必先在这里注册"
   ],
@@ -16,7 +17,11 @@
       "max_tokens": 16384,
       "temperature": 0.1,
       "chars_per_token": 3.0,
-      "extra_body": {"chat_template_kwargs": {"thinking": true}}
+      "extra_body": {
+        "chat_template_kwargs": {
+          "thinking": true
+        }
+      }
     }
   }
 }
