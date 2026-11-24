@@ -7,7 +7,6 @@
 选项排版按官方各自的习惯：
   MMLU-Pro    `A. 10, B. 40, ...`   单行、逗号分隔（官方 5-shot 示例的写法）
   LongBench   `(A) ...`              每行一个（官方 0shot.txt 的写法）
-  GPQA        `A) ...`               每行一个（官方题面的写法）
 """
 
 from __future__ import annotations
@@ -38,14 +37,6 @@ def fmt_mmlu_options(options: Iterable[str]) -> str:
     return ", ".join(f"{LETTERS[i]}. {o}" for i, o in enumerate(options))
 
 
-def fmt_choices_block(options: Iterable[str]) -> str:
-    """GPQA 选项块：`A) x` 每行一个；无选项时返回空串。"""
-    options = list(options or [])
-    if not options:
-        return ""
-    return "\n".join(f"{LETTERS[i]}) {o}" for i, o in enumerate(options)) + "\n\n"
-
-
 def template_name(shape: str, variant: str) -> str:
     if shape == "mmlu":
         return "mmlu_pro_5shot" if variant not in ("0shot", "zs") else "mmlu_pro_0shot"
@@ -53,7 +44,6 @@ def template_name(shape: str, variant: str) -> str:
         return f"longctx_{variant}.txt"
     return {
         "instruct": "instruct_0shot.txt",
-        "gpqa": "gpqa_0shot.txt",
         "passthrough": "passthrough.txt",
     }.get(shape, f"{shape}_{variant}.txt")
 
@@ -88,11 +78,6 @@ def render(row: dict, shape: str, variant: str = "0shot",
         parts.append(_sub(q_tpl, question=question,
                           options=fmt_mmlu_options(options)))
         return "\n\n".join(parts).strip() + "\n", f"mmlu_pro_{n_shot}shot"
-
-    if shape == "gpqa":
-        name = "gpqa_0shot.txt"
-        return _sub(_read(name, directory), question=question,
-                    choices=fmt_choices_block(options)).strip(), name
 
     if shape == "longctx":
         name = f"longctx_{variant}.txt"

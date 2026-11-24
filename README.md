@@ -1,6 +1,6 @@
 # CapBench
 
-**四任务能力评测集，判分对齐各数据集官方实现**
+**三任务能力评测集，判分对齐各数据集官方实现**
 
 固定划分、固定模板、固定判分。回答的问题是：*这套推理配置在通用能力上处于什么水平，改动前后差在哪一项。*
 
@@ -8,27 +8,25 @@
 |---|---|---:|---|---|
 | `ifeval` | 指令遵循 | 541 | prompt-level / instruction-level strict accuracy | 外部（官方校验器） |
 | `mmlu_pro` | 知识 | 500 | accuracy（5-shot CoT） | 本地 |
-| `gpqa_diamond` | 科学推理 | 198 | accuracy（`\boxed{}` 比对） | 本地 |
 | `longbench_v2` | 长上下文 | 200 | accuracy（0-shot） | 本地 |
 
-合计 1,439 题。
+合计 1,241 题。
 
 ---
 
 ## 关于「官方标准」
 
-四项的官方支持程度不一样，直接说清楚：
+三项的官方支持程度不一样，直接说清楚：
 
 | 任务 | 有官方判分代码吗 | 官方口径 | 本仓库怎么对齐 |
 |---|---|---|---|
 | IFEval | **有**（Python 校验器，24 类约束） | prompt-level / instruction-level，strict / loose | 不重写，`python -m capbench ifeval` 调 `lm_eval` 的官方实现并自动合并指标 |
 | MMLU-Pro | **有**（`evaluate_from_apiX.py`） | 5-shot CoT，抽取 `The answer is (X)` | 逐条复刻：模板、示例、解码参数、抽取正则 |
 | LongBench v2 | **有**（`pred.py` + `result.py`） | 0-shot，抽取 `The correct answer is (X)` | 逐条复刻：模板原文、t=0.1、抽取正则 |
-| GPQA Diamond | **没有** | 论文：四选一、逐步推理、答案放 `\boxed{}`、字符串比对 | 按论文实现；无官方脚本可对齐，属近似 |
 
-**GPQA 是唯一没有官方判分器的。** 官方只发布数据（gated）与论文设置，没有代码。
-本仓库按论文口径实现并明确标注为近似——它的绝对分不与公开榜单可比，
-但同一模型不同配置之间可比。
+**三项都有官方判分实现可对齐。** 这是 v2.3 删掉 GPQA Diamond 的直接原因：
+它没有官方判分代码，只有论文口径；数据又是 gated，默认只能拿到无四选项的镜像，
+绝对分既不可横比也不稳定。评测集里留一项"只能自己解释口径"的任务，对回归没有帮助。
 
 每项的细节、与官方的逐项偏差见 [`docs/tasks/`](docs/tasks/)。
 
@@ -42,7 +40,7 @@
 export HF_ENDPOINT=https://hf-mirror.com     # 国内网络
 pip install datasets
 
-python -m capbench list                      # 看四项题数
+python -m capbench list                      # 看三项题数
 python -m capbench build --tasks all         # 下载并抽样（约 500 MB）
 ```
 
@@ -87,12 +85,14 @@ IFEval 单列一条命令，因为它要外部校验器（`pip install lm-eval`�
 task              n  scored     acc     se  over  err unparsed  官方%   maxlen  maxtok
 ---------------------------------------------------------------------------------------
 mmlu_pro        500     500   62.40   2.17     0    0        0   97.6   262144   16384
-gpqa_diamond    198     186   38.89   3.58    12    0        3   94.1   262144   16384
 longbench_v2    200     158   64.56   3.81    42    0        1   99.4   262144   16384
 ```
 
 （示例数值取自 2026-11 的 16 卡 PD 分离实跑；`longbench_v2` 那一行是 v2.1 之前的旧划分，
 新划分要重跑。列结构才是这一段要说明的东西。）
+
+`ifeval` 那一行由 `python -m capbench ifeval` 单独补齐：`acc` 取 prompt-level strict，
+`over` / `unparsed` 恒为 0，`官方%` 记 `-`（它不走抽取规则，走官方校验器）。
 
 | 列 | 含义 |
 |---|---|
@@ -148,11 +148,10 @@ capbench/
 ├─ prompts/                  模板（官方原文，换模板不用改代码）
 │   ├─ mmlu_pro_{header,example,question}.txt   官方 5-shot 三段式
 │   ├─ longctx_{0shot,cot,no_context}.txt       官方 0shot / CoT / 无上下文对照
-│   ├─ gpqa_0shot.txt                           论文口径（boxed）
 │   └─ instruct_0shot.txt                       IFEval 原样送入
 ├─ config/models.json        模型注册表
 ├─ capbench/
-│   ├─ tasks.py              四任务的数据源、抽样、官方解码参数
+│   ├─ tasks.py              三任务的数据源、抽样、官方解码参数
 │   ├─ prompts.py            模板装配（选项排版按各自官方习惯）
 │   ├─ scoring.py            官方抽取规则 + 归一比对
 │   ├─ runner.py             生成循环与汇总
@@ -161,7 +160,7 @@ capbench/
 │   ├─ ifeval.py             IFEval 封装：调 lm_eval、解析结果、并进报表
 │   └─ __main__.py           CLI：list / build / check / eval / ifeval / report / compare
 ├─ splits/                   固定划分（进版本库）：id 列表 + sha256 + 5-shot 示例
-├─ docs/tasks/               四张数据卡（官方口径、抽样、偏差）
+├─ docs/tasks/               三张数据卡（官方口径、抽样、偏差）
 ├─ tests/test_scoring.py     判分回归测试
 ├─ tests/test_sampling.py    抽样回归测试（均匀性 / 确定性）
 ├─ tests/test_ifeval.py      IFEval 封装测试（命令拼装 / 结果解析）
@@ -177,7 +176,6 @@ capbench/
 |---|---|---|
 | IFEval | `google/IFEval` | Apache-2.0 |
 | MMLU-Pro | `TIGER-Lab/MMLU-Pro` | MIT |
-| GPQA Diamond | `Idavidrein/gpqa`（gated）/ `hendrydong/GPQA_diamond`（镜像） | CC BY 4.0 |
 | LongBench v2 | `zai-org/LongBench-v2` | MIT |
 
 本仓库只做抽样、模板与判分实现，**数据版权归各上游**，使用前请遵守各自许可。
@@ -193,9 +191,10 @@ capbench/
 **为什么不重写 IFEval 判分。** 24 类约束的边界条件（字数怎么数、标题算什么格式）
 官方实现里有大量细节，重写只会引入 bug 且不可比。宁可多装一个 `lm_eval`。
 
-**为什么 GPQA 用宽松归一而不是严格比对。** 198 题里 64% 的答案带单位或文字
-（`6.24x10^-7 M`、`1 and 2`）。严格比对会把「答对但少写单位」判错，实测最多低估 49pp。
-宽松的代价是极少数情况下会放过写法不同但实质不同的答案，这个代价比系统性低估小。
+**为什么删掉 GPQA Diamond。** 三条原因叠加：没有官方判分器（只能按论文实现，
+绝对分不可横比）、数据 gated（默认落到无四选项镜像，难度与官方不一致）、
+198 题的 SE 有 3.6pp（三项里最差的分辨率）。它占的时间不多但解释成本最高。
+删除后 `answers_equal` 那套自由作答归一化也一并移除了，需要时从 `9134025` 取回。
 
 **为什么不静默截断超窗题。** LongBench 官方是头尾各半截断，保证跑得完；本仓库改为
 预检跳过并单独统计 `over_ctx`。截断会让超窗题「看起来答完了」，分数里看不出丢了什么。
@@ -228,6 +227,7 @@ seed 新建，`randrange` 退化成 `floor(u·n)`，只覆盖每格前 `per_cell
 
 | 版本 | 变更 |
 |---|---|
+| 2.3.0 | 移除 `gpqa_diamond`：无官方判分器、数据 gated、SE 最大（3.6pp）。题目 1439 → 1241，`splits/`、`data/`、模板与数据卡同步删除；自由作答判分路径一并移除 |
 | 2.2.2 | IFEval 输出上限只信本轮记录（`--from-results` 不再拿当前配置的 `max_tokens` 顶替）；四项指标缺一项即拒绝合并 |
 | 2.2.1 | 修 IFEval 封装三处隐患：版本改从被调用 CLI 的环境取（取不到记 `unknown`）；每轮独立运行目录、题数与指标同源；侧车文件名加 `@revision`，base/fp8 不再互相覆盖 |
 | 2.2.0 | 新增 `ifeval` 子命令：封装 `lm_eval` 调用（含 `tokenizer_backend=none`、输出上限、结果合并），IFEval 指标自动进报表并记录校验器版本与 yaml 哈希 |

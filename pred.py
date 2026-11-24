@@ -5,7 +5,7 @@
 统计和出表交给 result.py，这样换统计口径不用重跑模型。
 
   python pred.py --model deepseek-v4.1                       # 全部任务
-  python pred.py --model deepseek-v4.1 --tasks mmlu_pro,gpqa_diamond
+  python pred.py --model deepseek-v4.1 --tasks mmlu_pro,longbench_v2
   python pred.py --model my-model --base-url http://127.0.0.1:30000 --limit 20
   python pred.py --model deepseek-v4.1 --prompt-variant 0shot
   python pred.py --model deepseek-v4.1 --tasks longbench_v2 --length short,medium

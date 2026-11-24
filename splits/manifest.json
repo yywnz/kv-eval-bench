@@ -90,29 +90,6 @@
       "sha256_16": "7b4bbfc953719800",
       "build_seconds": 11.3
     },
-    "gpqa_diamond": {
-      "task": "gpqa_diamond",
-      "dimension": "科学推理",
-      "display": "GPQA Diamond",
-      "shape": "gpqa",
-      "source": "Idavidrein/gpqa（官方 gated）",
-      "license": "CC BY 4.0",
-      "n": 198,
-      "metric": "accuracy（\\boxed{} 抽取后归一比对）",
-      "judge": "local",
-      "official_decode": {
-        "temperature": 0.5,
-        "max_tokens": 8192
-      },
-      "policy": "全量（Diamond 子集）",
-      "source_used": "hendrydong/GPQA_diamond（公开镜像，无四选项）",
-      "official_options": false,
-      "note": "无四选项，模型只能凭题面作答，难度高于官方设置；分数不可与公开榜单横比",
-      "file": "gpqa_diamond.jsonl",
-      "size_mb": 0.13,
-      "sha256_16": "3abfa9f33bd224aa",
-      "build_seconds": 9.8
-    },
     "longbench_v2": {
       "task": "longbench_v2",
       "dimension": "长上下文",

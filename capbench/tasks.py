@@ -104,56 +104,6 @@ def build_mmlu_exemplars(seed: int, per_cat: int = 5, **_) -> dict:
     return {k: out[k] for k in sorted(out)}
 
 
-# ---------------------------------------------------------------- GPQA
-
-def build_gpqa(seed: int, **_) -> tuple[list[dict], dict]:
-    """优先取官方 gated 数据（含四选项）；取不到则回落到公开的无选项镜像。
-
-    两种来源的 `meta.official_options` 不同，报告里必须标明——无选项时的
-    难度高于官方设置，分数不可与榜单横比。
-    """
-    from .scoring import extract_boxed
-    rows: list[dict] = []
-    source = ""
-    try:
-        for r in _hf("Idavidrein/gpqa", "diamond"):
-            opts = [r.get(k) for k in ("Correct Answer", "Incorrect Answer 1",
-                                       "Incorrect Answer 2", "Incorrect Answer 3")]
-            rows.append({
-                "id": qid("gpqa", r["Question"]),
-                "task": "gpqa_diamond", "kind": "open", "match": "boxed",
-                "question": r["Question"],
-                "options": [str(o) for o in opts],
-                "answer": str(r["Correct Answer"]).strip(),
-                "meta": {"domain": r.get("Domain") or r.get("Subdomain"),
-                         "official_options": True},
-            })
-        source = "Idavidrein/gpqa（官方 gated）"
-    except Exception:
-        for r in _hf("hendrydong/GPQA_diamond", "test"):
-            ans = extract_boxed(r.get("solution") or "")
-            if not ans:
-                tail = (r.get("solution") or "").strip().splitlines()
-                ans = tail[-1].strip() if tail else ""
-            rows.append({
-                "id": qid("gpqa", r["problem"]),
-                "task": "gpqa_diamond", "kind": "open", "match": "boxed",
-                "question": r["problem"],
-                "options": [],
-                "answer": ans,
-                "meta": {"domain": r.get("domain"), "official_options": False},
-            })
-        source = "hendrydong/GPQA_diamond（公开镜像，无四选项）"
-
-    rows.sort(key=lambda x: x["id"])
-    has_opts = all(r["meta"]["official_options"] for r in rows)
-    return rows, {"policy": "全量（Diamond 子集）", "source_used": source,
-                  "official_options": has_opts,
-                  "note": ("与官方设置一致（四选项 + boxed 字符串比对）" if has_opts else
-                           "无四选项，模型只能凭题面作答，难度高于官方设置；"
-                           "分数不可与公开榜单横比")}
-
-
 # ---------------------------------------------------------------- LongBench v2
 
 def reservoir_by_cell(stream, per_cell: int, seed: int):
@@ -272,16 +222,6 @@ _reg(name="mmlu_pro", dimension="知识", display="MMLU-Pro",
      note="官方为 5-shot CoT，示例取自 validation 集，每类 5 条",
      build=build_mmlu_pro, doc="docs/tasks/mmlu-pro.md")
 
-_reg(name="gpqa_diamond", dimension="科学推理", display="GPQA Diamond",
-     source="Idavidrein/gpqa（官方 gated）",
-     source_url="https://huggingface.co/datasets/Idavidrein/gpqa",
-     license="CC BY 4.0", kind="open", shape="gpqa",
-     metric="accuracy（\\boxed{} 抽取后归一比对）",
-     judge="local",
-     decode={"temperature": 0.5, "max_tokens": 8192},
-     note="论文口径：逐步推理，答案放 \\boxed{}；官方数据 gated，无权限时回落无选项镜像",
-     build=build_gpqa, doc="docs/tasks/gpqa-diamond.md")
-
 _reg(name="longbench_v2", dimension="长上下文", display="LongBench v2",
      source="zai-org/LongBench-v2", source_url="https://huggingface.co/datasets/zai-org/LongBench-v2",
      license="MIT", kind="mc", shape="longctx",
@@ -303,4 +243,4 @@ def build_one(name: str, seed: int, **params) -> tuple[list[dict], dict]:
 
 
 # 固定顺序，CLI 与 pred.py 共用
-ORDER = ["ifeval", "mmlu_pro", "gpqa_diamond", "longbench_v2"]
+ORDER = ["ifeval", "mmlu_pro", "longbench_v2"]

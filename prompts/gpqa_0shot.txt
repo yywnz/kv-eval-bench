@@ -1,3 +1,0 @@
-What is the correct answer to this question: {question}
-
-{choices}Reason step by step, and put your final answer within \boxed{}.

@@ -4,7 +4,6 @@
 |---|---|---|
 | MMLU-Pro | `The answer is (X)` | TIGER-Lab/MMLU-Pro `evaluate_from_apiX.py` |
 | LongBench v2 | `The correct answer is (X)` | THUDM/LongBench `pred.py::extract_answer` |
-| GPQA | `\\boxed{...}` 内容归一后比对 | 论文（无官方代码） |
 | IFEval | 官方约束校验器 | 外部（lm_eval），本文件不实现 |
 
 抽取失败时退回通用规则（最后一个独立字母），`parse` 字段标明走了哪条路，
@@ -28,10 +27,6 @@ _MARK_RE = re.compile(
     r"\s*(?:is|are|为|是|should\s+be)?\s*[:：]?\s*[*_`$\s]*\(?\s*([A-Z])(?![A-Za-z])",
     re.I)
 _LONE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z])(?![A-Za-z0-9])")
-# 科学计数：6.24x10^-7 / 10^-4
-_SCI_MANT = re.compile(r"(\d+(?:\.\d+)?)\s*[x×]\s*10\s*\^?\s*\{?\s*(-?\d+)\s*\}?")
-_SCI_BARE = re.compile(r"(?<![\d.])10\s*\^?\s*\{?\s*(-?\d+)\s*\}?")
-_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 
 
 def letters_for(n: int) -> list[str]:
@@ -41,35 +36,6 @@ def letters_for(n: int) -> list[str]:
 
 def _clean(s: Any) -> str:
     return str(s or "").replace("\u00a0", " ").replace("\u2212", "-")
-
-
-def extract_boxed(s: str) -> str | None:
-    """取**最后一个** \\boxed{...} 的内容，支持任意深度嵌套。
-
-    取最后一个而不是第一个：模型常在中间步骤也写 boxed（例如先求中间量），
-    第一个往往不是最终答案。
-    """
-    s = _clean(s)
-    starts = [m.start() for m in re.finditer(r"\\boxed\s*\{", s)]
-    if not starts:
-        return None
-    for i in reversed(starts):
-        j = s.find("{", i) + 1
-        depth, buf = 1, []
-        while j < len(s) and depth:
-            c = s[j]
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            buf.append(c)
-            j += 1
-        got = "".join(buf).strip()
-        if got:
-            return got
-    return None
 
 
 def extract_choice(text: str, choices: str = "ABCDEFGHIJ") -> tuple[str | None, str]:
@@ -109,58 +75,6 @@ def _first_step_logprobs(lp: Any) -> dict[str, float]:
     return out
 
 
-def _norm_math(s: Any) -> str:
-    """归一 LaTeX / 符号写法，减少「答案对但写法不同」的假阴性。"""
-    s = _clean(s)
-    for a in ("$", "\\(", "\\)", "\\[", "\\]", "{", "}", "\\!", "\\,", "\\;",
-              "\\ ", "\\quad", "\\left", "\\right"):
-        s = s.replace(a, "")
-    s = (s.replace("\\boxed", "").replace("\\text", " ").replace("\\mathrm", "")
-          .replace("\\times", "x").replace("\\cdot", "x")
-          .replace("×", "x").replace("·", "x").replace("*", "x")
-          .replace("\\%", "%"))
-    s = re.sub(r"\s+", " ", s).strip().lower()
-    return re.sub(r"(?<![\dx])1e([-+]?\d+)", r"10^\1", s)
-
-
-def _numbers(s: str) -> list[float]:
-    s = _SCI_MANT.sub(lambda m: f" {float(m.group(1)) * 10 ** int(m.group(2)):.10g} ", s)
-    s = _SCI_BARE.sub(lambda m: f" {10 ** int(m.group(1)):.10g} ", s)
-    s = _THOUSANDS.sub("", s).replace(",", " ")
-    return [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", s)]
-
-
-def _close(a: float, b: float) -> bool:
-    return abs(a - b) <= max(1e-6, 0.005 * max(abs(a), abs(b)))
-
-
-def _same_numbers(ga: list[float], ca: list[float]) -> bool:
-    if not ga or len(ga) != len(ca):
-        return False
-    return all(_close(x, y) for x, y in zip(sorted(ga), sorted(ca)))
-
-
-def answers_equal(gold: Any, cand: Any) -> bool:
-    """自由作答比对。宁可放过「写法不同」，也不放过「数值不同」。"""
-    na, nc = _norm_math(gold), _norm_math(cand)
-    if not na or not nc:
-        return False
-    if na == nc:
-        return True
-    ga, ca = _numbers(na), _numbers(nc)
-    if _same_numbers(ga, ca):
-        return True
-    if ga and ca:                       # 44% vs 0.439
-        if "%" in na and "%" not in nc and _close(ga[0] / 100, ca[0]):
-            return True
-        if "%" in nc and "%" not in na and _close(ga[0], ca[0] / 100):
-            return True
-    short, long = sorted((na, nc), key=len)   # 模型少写单位
-    if len(short) >= 3 and short in long:
-        return True
-    return False
-
-
 def score_mc(resp: dict, task: str, choices: str) -> dict:
     """多选：先跑官方抽取规则，再退回通用规则，最后才用 logprob。"""
     text = resp.get("text", "")
@@ -194,19 +108,6 @@ def margin_of(correct: str, lp: dict[str, float]) -> float | None:
     return round(lp[correct] - max(wrongs), 4) if wrongs else None
 
 
-def score_text(resp: dict, answer: str, mode: str = "boxed") -> dict:
-    """自由作答（GPQA）。取最后一个 \\boxed{}，取不到用全文。"""
-    raw = resp.get("text") or ""
-    if not str(answer).strip():
-        return {"chosen": raw[:200], "correct": None, "parse": "none", "official": False}
-    cand = extract_boxed(raw) if mode == "boxed" else None
-    src = cand if cand else raw
-    return {"chosen": (cand or raw.strip())[:200],
-            "correct": answers_equal(answer, src),
-            "parse": "boxed" if cand else "text",
-            "official": bool(cand)}
-
-
 def score(row: dict, resp: dict) -> dict:
     """按任务分派，返回 {correct, chosen, parse, official, margin?}。"""
     task = row.get("task", "")
@@ -224,8 +125,5 @@ def score(row: dict, resp: dict) -> dict:
         s["correct"] = s["chosen"] == row.get("answer")
         s["margin"] = margin_of(row.get("answer", ""), s["lp"])
         return s
-
-    if kind == "open":
-        return score_text(resp, row.get("answer", ""), row.get("match", "boxed"))
 
     raise ValueError(f"未知题型 {kind}（task={task}）")

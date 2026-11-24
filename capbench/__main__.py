@@ -1,6 +1,6 @@
 """命令行入口。
 
-  python -m capbench list                    列出四个任务与官方口径
+  python -m capbench list                    列出三个任务与官方口径
   python -m capbench build --tasks all       下载并按固定策略抽样
   python -m capbench check  --model X        检查数据、模板与端点
   python -m capbench eval   --model X        跑一遍 → pred/{model}.jsonl
@@ -39,7 +39,6 @@ DEFAULT_SEED = 2026
 GROUP_KEYS = {
     "ifeval": (),
     "mmlu_pro": ("category",),
-    "gpqa_diamond": ("domain",),
     "longbench_v2": ("difficulty", "length"),
 }
 
@@ -408,7 +407,9 @@ def cmd_report(args):
             for label, v in g.items():
                 print(f"  {label:<40}{v['n']:>5}  {v['accuracy']:>6.2f}%")
 
-    Path(args.table).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    table_path = Path(args.table)
+    table_path.parent.mkdir(parents=True, exist_ok=True)
+    table_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     out_json = Path(args.out) / f"{args.model}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps({
@@ -495,7 +496,7 @@ def cmd_compare(args):
 # ---------------------------------------------------------------- main
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="capbench", description="CapBench —— 四任务能力评测集")
+    ap = argparse.ArgumentParser(prog="capbench", description="CapBench —— 三任务能力评测集")
     ap.add_argument("--version", action="version", version=f"capbench {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

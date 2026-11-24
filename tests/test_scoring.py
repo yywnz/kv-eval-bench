@@ -11,9 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from capbench.prompts import (fmt_choices_block, fmt_mmlu_options, render)
-from capbench.scoring import (answers_equal, extract_boxed, letters_for,
-                              score, score_text)
+from capbench.prompts import fmt_mmlu_options, render
+from capbench.scoring import letters_for, score
 
 FAILED = []
 
@@ -60,28 +59,8 @@ r = mc("mmlu_pro", "无法判断", "E", logprobs={"content": [{"top_logprobs": [
     {"token": "E", "logprob": -0.3}]}]})
 check("正文无效才用 logprob", r["parse"], "logprob")
 
-# ------------------------------------------------ GPQA boxed
-check("取最后一个 boxed", extract_boxed(r"先算 $\boxed{3}$，故 $\boxed{42}$"), "42")
-check("嵌套 text", extract_boxed(r"$\boxed{1,\ \text{and }2}$"), r"1,\ \text{and }2")
-check("无 boxed 返回 None", extract_boxed("答案是 42"), None)
-check("GPQA 走 boxed 判定", score_text({"text": r"$\boxed{42}$"}, "42")["correct"], True)
-check("GPQA 未 boxed 降级全文", score_text({"text": "42"}, "42")["parse"], "text")
-
-# ------------------------------------------------ 自由作答等价
-check("集合 1,2,4", answers_equal("1,2,4", r"1,\ 2,\ \text{and }4"), True)
-check("百分比 44% vs 0.439", answers_equal("44%", "0.439"), True)
-check("单位缺省", answers_equal("10^-4 eV", "10^{-4}"), True)
-check("科学计数 6.24x10^-7 M", answers_equal("6.24x10^-7 M", "6.24e-7"), True)
-check("自由文本包含", answers_equal("cytoplasmic localization of the red signal",
-                              "The answer is cytoplasmic localization of the red signal."), True)
-check("数值不同必判错", answers_equal("42", "43"), False)
-check("短串不做包含（1 vs 10）", answers_equal("1", "10"), False)
-check("空答案不误判", answers_equal("", "42"), False)
-
 # ------------------------------------------------ 模板
 check("MMLU 选项单行逗号", fmt_mmlu_options(["x", "y"]), "A. x, B. y")
-check("GPQA 无选项时选项块为空", fmt_choices_block([]), "")
-check("GPQA 有选项时每行一个", fmt_choices_block(["x", "y"]), "A) x\nB) y\n\n")
 
 p, name = render({"question": "Q", "options": ["x", "y"]}, "mmlu", "0shot",
                  exemplars={"physics": []})
@@ -99,9 +78,6 @@ p, _ = render({"context": "DOC", "question": "Q",
                "options": ["a", "b", "c", "d"]}, "longctx", "0shot")
 check("LongBench 官方结尾", p.endswith('"The correct answer is (insert answer here)".'), True)
 check("LongBench 选项带括号", "(A) a" in p, True)
-
-p, _ = render({"question": "Q", "options": []}, "gpqa", "0shot")
-check("GPQA 要求 boxed", p.rstrip().endswith(r"within \boxed{}."), True)
 
 print()
 if FAILED:
