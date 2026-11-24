@@ -227,6 +227,19 @@ model,size,type,ifeval,mmlu_pro,gpqa_diamond,aime,livecodebench,longbench_v2,con
 `baseline` 会把 `endpoint / max_tokens / maxlen / extra_body / prompt_variant` 写进
 `baselines/{model}/{rev}/meta.json`。
 
+### PD 分离部署
+
+接口不变，但瓶颈会从 decode 转到 prefill，跑法要调三处：
+
+- **并发要扫，不能拍。** `--concurrency` 太低 decode 跑不满，太高则 prefill 排队、
+  KV 传输拥塞，吞吐不增而 TTFT 恶化。16 卡 1P1D 建议从 16/32/64 各跑 20 题取拐点。
+- **长文单独跑。** `longbench_v2` 单题输入可达 50k+ token，混在短题里会抢占 P 节点，
+  让其余任务的 TTFT 失真；反过来 decode 节点在处理长题时是闲的。分两次跑，
+  两次的数字都更稳。
+- **任务顺序固定。** 混跑时前一项的负载会影响后一项的排队，`pred.py` 按
+  `ifeval → mmlu_pro → gpqa_diamond → aime → livecodebench → longbench_v2`
+  固定顺序执行，不要用 `--tasks` 随便重排后跟历史结果比。
+
 ---
 
 ## 目录结构
