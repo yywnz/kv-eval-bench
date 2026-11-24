@@ -136,6 +136,45 @@ lm_eval --model local-completions \
 
 ---
 
+## 耗时
+
+耗时几乎全由**输出 token** 决定（thinking 模型每题几千 token），输入侧可忽略——
+六项输入合计约 4.3M token，prefill 只占几分钟。
+
+| 任务 | 题数 | 单题输出 | 合计 | 占比 |
+|---|---:|---:|---:|---:|
+| gpqa_diamond | 198 | 3,500 | 0.69M | 34% |
+| mmlu_pro | 500 | 1,200 | 0.60M | 29% |
+| aime | 60 | 6,000 | 0.36M | 17% |
+| ifeval | 541 | 350 | 0.19M | 9% |
+| livecodebench | 150 | 1,200 | 0.18M | 9% |
+| longbench_v2 | 78 | 600 | 0.05M | 2% |
+| **合计** | **1,527** | | **2.07M** | |
+
+时间 ≈ `2.07M / 聚合输出吞吐`：
+
+| 聚合 tok/s | 六项全量 |
+|---:|---:|
+| 100 | 5.7 小时 |
+| 300 | 1.9 小时 |
+| 800 | 43 分钟 |
+| 1500 | 23 分钟 |
+
+**注意区分两个数**：单请求 decode 速度（TPOT 的倒数）和聚合吞吐。前者 100 tok/s、
+并发 16 时后者约 1,000 tok/s，差一个数量级。判定方法：
+
+```bash
+time python pred.py --model X --tasks mmlu_pro --limit 10 --concurrency 1
+time python pred.py --model X --tasks mmlu_pro --limit 10 --concurrency 16
+```
+
+第二次耗时约为第一次的 1/8，说明 100 是单请求速度、还能靠并发放大；
+两次接近，说明已经饱和，100 就是聚合上限。
+
+`aime` 只有 60 题却占 17%，因为它每题思考极长——想压时间优先砍它，而不是砍题数最多的 `ifeval`。
+
+---
+
 ## Prompt 模板
 
 模板在 `prompts/`，文件名是 `{shape}_{variant}.txt`：
