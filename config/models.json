@@ -1,0 +1,27 @@
+{
+  "_readme": [
+    "模型注册表。对应 LongBench 的 model2path.json + model2maxlen.json。",
+    "maxlen 是有效上下文长度（tokens），用于「超窗预检」：预估超过它就不发送，",
+    "记为 over_context，不进准确率分母。不做静默截断。",
+    "chars_per_token 是超窗预检的字符/token 换算比，英文约 4，中英混排约 2–3。",
+    "命令行 --base-url 可直接覆盖，不必先在这里注册。"
+  ],
+  "models": {
+    "deepseek-v4.1": {
+      "base_url": "http://127.0.0.1:30000",
+      "maxlen": 131072,
+      "max_tokens": 16384,
+      "temperature": 0.0,
+      "chars_per_token": 3.0,
+      "extra_body": {"chat_template_kwargs": {"thinking": true}}
+    },
+    "glm-series": {
+      "base_url": "http://127.0.0.1:30001",
+      "maxlen": 131072,
+      "max_tokens": 16384,
+      "temperature": 0.0,
+      "chars_per_token": 3.0,
+      "extra_body": {"chat_template_kwargs": {"thinking": false}}
+    }
+  }
+}

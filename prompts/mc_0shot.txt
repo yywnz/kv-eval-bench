@@ -1,0 +1,7 @@
+Answer the following multiple-choice question. Reply with the single letter of the correct option.
+
+Question: {question}
+
+{options}
+
+Answer:/n

@@ -1,0 +1,9 @@
+Answer the following multiple-choice question.
+
+Think step by step, then end with a final line in the form "Answer: <letter>".
+
+Question: {question}
+
+{options}
+
+Answer:/n

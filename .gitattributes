@@ -1,0 +1,2 @@
+# 统一换行符，避免 Windows 上提交 CRLF 后在集群上跑出 diff
+* text=auto eol=lf

@@ -1,0 +1,4 @@
+# 跑评测不需要任何第三方依赖，只用标准库。
+# 下面这些只在 `python -m capbench build`（下载并按策略抽样）时需要。
+datasets>=2.18
+huggingface_hub>=0.23

@@ -1,0 +1,16 @@
+# 数据由 `python -m capbench build` 生成，不进版本库；splits/ 里的划分文件进版本库
+data/
+baselines/
+results/*/
+!results/leaderboard.csv
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.idea/
+.DS_Store
+
+# 运行产物
+pred/
+result.txt
