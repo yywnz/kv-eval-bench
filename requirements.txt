@@ -1,4 +1,10 @@
-# 跑评测不需要任何第三方依赖，只用标准库。
+# 跑评测本身不需要任何第三方依赖，只用标准库。
 # 下面这些只在 `python -m capbench build`（下载并按策略抽样）时需要。
 datasets>=2.18
 huggingface_hub>=0.23
+
+# IFEval 判分要另装官方校验器（本仓库不含，也不重写）：
+#   pip install lm-eval
+# 包名 lm-eval，命令 lm_eval，import 名 lm_eval。它会连带装 torch / transformers，
+# 即使只用 API 模式也一样重（数 GB）。三项本地判分的任务不需要它。
+# 装好后用 `python -m capbench ifeval --model X`，结果由 result.py 自动合并。

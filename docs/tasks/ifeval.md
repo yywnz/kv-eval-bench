@@ -1,6 +1,6 @@
 # IFEval
 
-**维度**：指令遵循 · **题数**：541（全量）· **判分**：外部（官方 verifier）
+**维度**：指令遵循 · **题数**：541（全量）· **判分**：官方校验器（外部执行，本仓库封装调用）
 
 ## 来源
 
@@ -31,17 +31,52 @@ JSON 格式、标题格式、语言等）。
 
 ## 怎么跑
 
+一条命令，内部起 `lm_eval` 子进程并把结果并进同一张表：
+
 ```bash
-lm_eval --model local-completions \
-  --model_args base_url=http://127.0.0.1:30000/v1,model=<model>,tokenized_requests=False \
-  --tasks ifeval --num_fewshot 0 --batch_size 32
+python -m capbench ifeval --model glm-flash          # → results/ifeval-glm-flash.json
+python result.py --model glm-flash                   # ifeval 行自动出现
 ```
 
-`python -m capbench check` 会把这条命令连同当前端点直接打印出来。
+```bash
+python -m capbench ifeval --model glm-flash --dry-run            # 只看拼出的命令
+python -m capbench ifeval --model glm-flash --max-gen-toks 16384 # 思考模型必须调大
+python -m capbench ifeval --model glm-flash --limit 20           # 冒烟
+python -m capbench ifeval --model glm-flash --from-results DIR   # 复用已有输出，不重跑
+```
 
-`python pred.py` 遇到本任务会**跳过**（`judge: external`），因为本地没有判分器，
-跑了也出不了分。若只需要原始回答，加 `--tasks ifeval` 单独跑并保留 `pred/` 里的输出，
-再手工送进官方校验器。
+需要先装校验器本体（仓库不 vendor 它）：
+
+```bash
+pip install lm-eval        # 连带 torch，数 GB；只用 API 模式也一样
+```
+
+### 两个坑，封装里已经处理
+
+1. **`tokenizer_backend=none` 必须给。** 不给的话 `lm_eval` 会拿模型名去 HF 找
+   tokenizer，端点上的名字（`glm-flash` 这种）不在 HF 上，直接
+   `OSError: Can't load the configuration of ...`。手敲命令时最容易漏这一条。
+2. **输出上限。** 官方 yaml 是 `max_gen_toks: 1280`，思考模型的推理段会把它耗尽。
+   配置里写了 `max_tokens` 就用配置的值，也可以用 `--max-gen-toks` 显式给。
+
+### 口径凭据
+
+IFEval 的分数取决于三样东西，`results/ifeval-{model}.json` 里都记了：
+
+| 字段 | 作用 |
+|---|---|
+| `lm_eval.version` | 校验器版本；它更新会改口径 |
+| `lm_eval.task_version` | 任务 yaml 里的 `metadata.version`（现在是 4.0） |
+| `lm_eval.yaml_sha256_16` | yaml 内容的哈希，比版本号更难糊弄 |
+| `lm_eval.max_gen_toks` | 本次实际给的输出上限 |
+
+这三项任一变化，ifeval 的分数就不该和以前并列。
+
+**这里仍有一处没法自证**：`lm_eval` 自己从 `google/IFEval` 下载数据，我们
+`data/ifeval.jsonl` 的 `splits/ifeval.json` 对它没有约束力。上游改题我们检测不到，
+只能靠 `n=541` 和数据集版本间接判断。另外 `langdetect` 默认不固定随机种子
+（官方建议 `DetectorFactory.seed = 0`），「用英语回答」「全大写英文」这两类检查
+存在极小概率的抖动——这一点在外部实现里，本仓库改不了，只能记在这里。
 
 ## 数据格式
 
@@ -60,9 +95,10 @@ lm_eval --model local-completions \
 
 | 项 | 官方 | 本仓库 |
 |---|---|---|
-| 题量 | 541 | 541（全量） |
-| 判分 | 官方校验器 | 同一实现，通过 `lm_eval` 调用 |
+| 题量 | 541 | 541（全量，但数据由 lm_eval 自行下载） |
+| 判分 | 官方校验器 | 同一实现，经 `lm-eval` 子进程调用，结果自动并入报表 |
 | prompt | 原文直接送入 | 相同（`prompts/instruct_0shot.txt` 只含 `{question}`） |
+| 生成 | `temperature=0`、`max_gen_toks=1280` | 相同；思考模型用配置或 `--max-gen-toks` 调大后须注明 |
 
 **唯一需要对齐的是 chat template**：IFEval 的约束里有「全大写」「不加逗号」这类
 对表面形式敏感的要求，system prompt 或模板里多一句话都可能让模型改变行为。

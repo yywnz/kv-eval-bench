@@ -21,7 +21,7 @@
 
 | 任务 | 有官方判分代码吗 | 官方口径 | 本仓库怎么对齐 |
 |---|---|---|---|
-| IFEval | **有**（Python 校验器，24 类约束） | prompt-level / instruction-level，strict / loose | 不重写，交给 `lm_eval` 内置的官方实现 |
+| IFEval | **有**（Python 校验器，24 类约束） | prompt-level / instruction-level，strict / loose | 不重写，`python -m capbench ifeval` 调 `lm_eval` 的官方实现并自动合并指标 |
 | MMLU-Pro | **有**（`evaluate_from_apiX.py`） | 5-shot CoT，抽取 `The answer is (X)` | 逐条复刻：模板、示例、解码参数、抽取正则 |
 | LongBench v2 | **有**（`pred.py` + `result.py`） | 0-shot，抽取 `The correct answer is (X)` | 逐条复刻：模板原文、t=0.1、抽取正则 |
 | GPQA Diamond | **没有** | 论文：四选一、逐步推理、答案放 `\boxed{}`、字符串比对 | 按论文实现；无官方脚本可对齐，属近似 |
@@ -69,10 +69,15 @@ python -m capbench build --tasks all         # 下载并抽样（约 500 MB）
 ```bash
 python -m capbench check  --model my-model          # 数据/模板/端点自检
 python pred.py   --model my-model --tasks all       # → pred/my-model.jsonl
+python -m capbench ifeval --model my-model          # IFEval 走官方校验器 → results/ifeval-my-model.json
 python result.py --model my-model --detail          # → result.txt + results/my-model.json
 ```
 
 两段式对应 LongBench 的 `pred.py` / `result.py`：换统计口径只重跑 `result.py`，不重跑模型。
+
+`pred.py` 只跑三项本地判分的任务（`ifeval` 标为 `judge: external`，会跳过）；
+IFEval 单列一条命令，因为它要外部校验器（`pip install lm-eval`，会连带 torch）。
+`result.py` 会把两边合成同一张表。
 
 ---
 
@@ -123,7 +128,7 @@ python -m capbench compare --model glm-flash --baseline-revision base --revision
 3. **thinking 开关**：同一个权重开/关是两套分数，必须显式声明。
 4. **chat template**：是否加 system prompt 会影响 IFEval（它有「全大写」「不许逗号」这类约束）。
 5. **超窗策略**：本仓库跳过并统计；官方 LongBench 是头尾截断。两者分母不同。
-6. **判分归属**：`ifeval` 用官方校验器，其余用本仓库实现。
+6. **判分归属**：`ifeval` 用官方校验器（经 `lm-eval` 子进程，版本与 yaml 哈希记在结果里），其余用本仓库实现。
 7. **revision**：`--revision base` / `--revision fp8` 写进同一个 `pred/{model}.jsonl`，
    `report` 与 `compare` 都按 revision 取数；不声明 revision 就报「默认」那一份。
 8. **划分版本**：`splits/*.json` 里的 `sha256_16` 是「同一批题」的凭据。
@@ -153,11 +158,13 @@ capbench/
 │   ├─ runner.py             生成循环与汇总
 │   ├─ stats.py              标准误、配对检验
 │   ├─ client.py             OpenAI 兼容客户端
-│   └─ __main__.py           CLI：list / build / check / eval / report / compare
+│   ├─ ifeval.py             IFEval 封装：调 lm_eval、解析结果、并进报表
+│   └─ __main__.py           CLI：list / build / check / eval / ifeval / report / compare
 ├─ splits/                   固定划分（进版本库）：id 列表 + sha256 + 5-shot 示例
 ├─ docs/tasks/               四张数据卡（官方口径、抽样、偏差）
 ├─ tests/test_scoring.py     判分回归测试
 ├─ tests/test_sampling.py    抽样回归测试（均匀性 / 确定性）
+├─ tests/test_ifeval.py      IFEval 封装测试（命令拼装 / 结果解析）
 ├─ data/                     （不进版本库）构建产物
 └─ results/                  聚合结果 + leaderboard.csv
 ```
@@ -221,6 +228,7 @@ seed 新建，`randrange` 退化成 `floor(u·n)`，只覆盖每格前 `per_cell
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.0 | 新增 `ifeval` 子命令：封装 `lm_eval` 调用（含 `tokenizer_backend=none`、输出上限、结果合并），IFEval 指标自动进报表并记录校验器版本与 yaml 哈希 |
 | 2.1.0 | 修复 LongBench 分层抽样的 RNG 重用（**划分重建，200 题换 88 题**）；`top_logprobs` 5→20；`report` 增 `maxlen` / `maxtok` 列并按 revision 过滤；新增 `compare`；抽样测试独立成 `tests/test_sampling.py` |
 | 2.0.0 | 四项任务定型，判分对齐各数据集官方实现（去掉 AIME / LiveCodeBench） |
 

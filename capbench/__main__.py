@@ -4,6 +4,7 @@
   python -m capbench build --tasks all       下载并按固定策略抽样
   python -m capbench check  --model X        检查数据、模板与端点
   python -m capbench eval   --model X        跑一遍 → pred/{model}.jsonl
+  python -m capbench ifeval --model X        官方校验器跑 IFEval → results/ifeval-{model}.json
   python -m capbench report --model X        汇总 → result.txt + results/{model}.json
   python -m capbench compare --model X --baseline-revision base --revision fp8
                                              两个 revision 逐题配对 → Δpp / 翻转 / p
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from . import __version__
 from . import config as cfgmod
+from . import ifeval as ifevalmod
 from .client import Client, Model
 from .prompts import render
 from .runner import (filter_length, generate, group_by, load_exemplars,
@@ -42,9 +44,8 @@ GROUP_KEYS = {
 }
 
 EXTERNAL_CMDS = {
-    "ifeval": "lm_eval --model local-completions --model_args "
-              "base_url={base}/v1,model={model},tokenized_requests=False "
-              "--tasks ifeval --num_fewshot 0 --batch_size 32",
+    "ifeval": "python -m capbench ifeval --model {model}"
+              "   （官方校验器由 lm_eval 提供，本命令封装了它的调用与结果合并）",
 }
 
 
@@ -257,6 +258,54 @@ def _upsert(path: Path, recs: list[dict]) -> None:
     shutil.move(tmp, path)
 
 
+# ---------------------------------------------------------------- ifeval
+
+def cmd_ifeval(args):
+    """跑官方校验器（lm_eval 子进程），结果写 results/ifeval-{model}.json。"""
+    m = _model(args)
+    results_dir = Path(args.out)
+    mt = args.max_gen_toks or (m.max_tokens if m.lock_max_tokens else None)
+
+    if args.from_results:
+        run_dir = Path(args.from_results)
+        if not run_dir.exists():
+            sys.exit(f"找不到 {run_dir}")
+        cli = ifevalmod.find_cli() or "lm-eval"
+        print(f"复用已有输出：{run_dir}")
+    else:
+        cli = ifevalmod.find_cli()
+        if not cli:
+            sys.exit("没找到 lm_eval 命令。\n"
+                     "  装：pip install lm-eval   （连带 torch，只为了跑 IFEval）\n"
+                     "  已有输出可直接复用：--from-results <目录>")
+        run_dir = results_dir / m.name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        cmd = ifevalmod.build_cmd(cli, m, run_dir, concurrency=args.concurrency,
+                                  batch_size=args.batch_size, limit=args.limit,
+                                  max_gen_toks=mt)
+        print("$ " + " ".join(cmd), flush=True)
+        if args.dry_run:
+            return 0
+        try:
+            ifevalmod.run(cmd)
+        except ifevalmod.IfevalError as e:
+            sys.exit(str(e))
+
+    try:
+        rec = ifevalmod.summarize(m, run_dir, cli, limit=args.limit)
+    except ifevalmod.IfevalError as e:
+        sys.exit(str(e))
+    rec["lm_eval"]["max_gen_toks"] = mt or "官方默认 1280"
+
+    p = ifevalmod.sidecar_path(ROOT / "results", m.name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+    ifevalmod.print_run(rec)
+    print(f"\n-> {p}")
+    print(f"下一步：python result.py --model {m.name}")
+    return 0
+
+
 # ---------------------------------------------------------------- report
 
 def _load(p: Path) -> list[dict]:
@@ -292,28 +341,50 @@ def cmd_report(args):
     for r in recs:
         by_task.setdefault(r["task"], []).append(r)
 
+    # IFEval 的判分在外部跑，结果单独存一份 sidecar；revision 对不上就不用
+    ext = ifevalmod.load_sidecar(ifevalmod.sidecar_path(Path(args.out), args.model))
+    if ext and str(ext.get("revision") or "default") != rev:
+        ext = None
+
     lines = ["task\tn\tscored\tacc\tse\tover\terr\tunparsed\tofficial%\tmaxlen\tmax_tokens"]
     print(f"{'task':<16}{'n':>5}{'scored':>8}{'acc':>9}{'se':>7}{'over':>6}"
           f"{'err':>5}{'unparsed':>10}{'官方%':>8}{'maxlen':>9}{'maxtok':>8}")
     print("-" * 93)
     summaries = []
-    for name in _tasks(args.tasks):
-        rs = by_task.get(name)
-        if not rs:
-            print(f"{name:<16}{'-':>5}  无数据")
-            continue
-        s = summarize(name, m, rs)
+
+    def emit(s):
         summaries.append(s)
         acc = "-" if s["accuracy"] is None else f"{s['accuracy']}"
-        print(f"{name:<16}{s['n']:>5}{s['n_scored']:>8}{acc:>9}{s['se_pp'] or '-':>7}"
+        print(f"{s['task']:<16}{s['n']:>5}{s['n_scored']:>8}{acc:>9}{s['se_pp'] or '-':>7}"
               f"{s['over_ctx']:>6}{s['n_error']:>5}{s['n_unparsed']:>10}"
               f"{s['official_parse_rate'] or '-':>8}{s['maxlen']:>9}"
               f"{(s['decode'] or {}).get('max_tokens', '-'):>8}")
         if s["accuracy"] is not None:
-            lines.append(f"{name}\t{s['n']}\t{s['n_scored']}\t{s['accuracy']}\t"
+            lines.append(f"{s['task']}\t{s['n']}\t{s['n_scored']}\t{s['accuracy']}\t"
                          f"{s['se_pp']}\t{s['over_ctx']}\t{s['n_error']}\t"
-                         f"{s['n_unparsed']}\t{s['official_parse_rate']}\t"
+                         f"{s['n_unparsed']}\t"
+                         f"{s['official_parse_rate'] if s['official_parse_rate'] is not None else '-'}\t"
                          f"{s['maxlen']}\t{(s['decode'] or {}).get('max_tokens')}")
+
+    for name in _tasks(args.tasks):
+        rs = by_task.get(name)
+        if rs:
+            emit(summarize(name, m, rs))
+            continue
+        if name == "ifeval" and ext:
+            emit(ifevalmod.as_summary(ext, m.maxlen))
+            continue
+        print(f"{name:<16}{'-':>5}  无数据")
+
+    if ext:
+        mt = (ext.get("metrics") or {})
+        lib = ext.get("lm_eval") or {}
+        print(f"\nIFEval 由官方校验器判分（lm-eval {lib.get('version')}，"
+              f"task v{lib.get('task_version')}）：prompt-strict {mt.get('prompt_strict')}% / "
+              f"loose {mt.get('prompt_loose')}%；instruction-level strict "
+              f"{mt.get('inst_strict')}% / loose {mt.get('inst_loose')}%")
+        print("  表中 acc 取 prompt-level strict；IFEval 无超窗与解析失败概念，"
+              "over / unparsed 恒为 0。")
 
     # 超窗题不进分母：比例一高，分数只代表跑通的那一段，必须当面说清
     thin = [s for s in summaries if s["n"] and s["over_ctx"] / s["n"] > 0.2]
@@ -466,6 +537,20 @@ def main(argv=None):
     e.add_argument("--limit", type=int, default=None)
     e.add_argument("--concurrency", type=int, default=16)
     e.set_defaults(fn=cmd_eval)
+
+    f = sub.add_parser("ifeval", help="用官方校验器跑 IFEval（外部 lm_eval）")
+    common(f)
+    f.add_argument("--out", default=str(ROOT / "results" / "lm_eval"),
+                   help="lm_eval 输出目录")
+    f.add_argument("--concurrency", type=int, default=8)
+    f.add_argument("--batch-size", type=int, default=8)
+    f.add_argument("--limit", type=int, default=None, help="只跑前 N 题（冒烟）")
+    f.add_argument("--max-gen-toks", type=int, default=None,
+                   help="覆盖官方 1280；思考模型需要调大")
+    f.add_argument("--from-results", default=None,
+                   help="不运行，直接解析已有的 lm_eval 输出目录")
+    f.add_argument("--dry-run", action="store_true", help="只打印命令")
+    f.set_defaults(fn=cmd_ifeval)
 
     r = sub.add_parser("report", help="汇总 pred/ 出表格")
     common(r)
