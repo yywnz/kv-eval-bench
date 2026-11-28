@@ -598,7 +598,7 @@ def _utf8_stdout() -> None:
 
 def main(argv=None):
     _utf8_stdout()
-    ap = argparse.ArgumentParser(prog="capbench", description="CapBench —— 三任务能力评测集")
+    ap = argparse.ArgumentParser(prog="capbench", description="CapBench —— 四任务评测 + 无损性对照")
     ap.add_argument("--version", action="version", version=f"capbench {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
