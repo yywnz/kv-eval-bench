@@ -1,9 +1,9 @@
 {
   "suite": "capbench",
-  "version": "2.1.0",
+  "version": "2.3.0",
   "schema": 3,
   "seed": 2026,
-  "built_at": "2026-11-24",
+  "built_at": "2026-11-28",
   "tasks": {
     "ifeval": {
       "task": "ifeval",
@@ -51,7 +51,7 @@
       "file": "ifeval.jsonl",
       "size_mb": 0.27,
       "sha256_16": "746480199b3a458c",
-      "build_seconds": 10.2
+      "build_seconds": 9.2
     },
     "mmlu_pro": {
       "task": "mmlu_pro",
@@ -88,7 +88,7 @@
       "file": "mmlu_pro.jsonl",
       "size_mb": 0.43,
       "sha256_16": "7b4bbfc953719800",
-      "build_seconds": 11.3
+      "build_seconds": 8.5
     },
     "longbench_v2": {
       "task": "longbench_v2",
@@ -133,8 +133,46 @@
       "file": "longbench_v2.jsonl",
       "size_mb": 209.5,
       "sha256_16": "5d4df6a45cca3fdd",
-      "build_seconds": 65.2,
-      "note": "v2.1 重建：修复蓄水池「每个 item 重建同种子 RNG」的缺陷，200 题中换掉 88 题，sha256_16 由 d6748c4282b59005 变为 5d4df6a45cca3fdd；v2.0 的分数不可与此混用"
+      "build_seconds": 81.8
+    },
+    "ruler": {
+      "task": "ruler",
+      "dimension": "长上下文检索",
+      "display": "RULER-style NIAH",
+      "shape": "ruler",
+      "source": "自建（干草堆取自 LongBench v2 文档）",
+      "license": "MIT（生成逻辑）",
+      "n": 24,
+      "metric": "accuracy，按长度 × 位置分组看衰减",
+      "judge": "local",
+      "official_decode": {
+        "temperature": 0.0,
+        "max_tokens": 128
+      },
+      "policy": "长度 4 档 × 位置 3 档 × 2 变体 × 重复 1",
+      "lengths_tok": [
+        8192,
+        32768,
+        65536,
+        131072
+      ],
+      "depths": [
+        0.1,
+        0.5,
+        0.9
+      ],
+      "variants": [
+        "single",
+        "multikey"
+      ],
+      "repeat": 1,
+      "filler_source": "longbench_v2 的真实长文档",
+      "chars_per_token": 3.0,
+      "note": "每格 1 题（repeat=1），只看长度聚合趋势；单格 0%/100% 不具统计意义",
+      "file": "ruler.jsonl",
+      "size_mb": 4.59,
+      "sha256_16": "397579c4231f4a80",
+      "build_seconds": 1.4
     }
   },
   "mmlu_exemplars": {

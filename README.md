@@ -1,6 +1,6 @@
 # CapBench
 
-**三任务能力评测集，判分对齐各数据集官方实现**
+**四任务能力评测集 + 无损性对照，判分对齐各数据集官方实现**
 
 固定划分、固定模板、固定判分。回答的问题是：*这套推理配置在通用能力上处于什么水平，改动前后差在哪一项。*
 
@@ -9,8 +9,13 @@
 | `ifeval` | 指令遵循 | 541 | prompt-level / instruction-level strict accuracy | 外部（官方校验器） |
 | `mmlu_pro` | 知识 | 500 | accuracy（5-shot CoT） | 本地 |
 | `longbench_v2` | 长上下文 | 200 | accuracy（0-shot） | 本地 |
+| `ruler` | 长上下文检索 | 24 | accuracy，按长度 × 位置看衰减 | 本地（自建） |
 
-合计 1,241 题。
+合计 1,265 题。另有一条**不属于准确率**的检查：
+
+| `consistency` | 无损性 | 自选 40 | **逐 token 100% 相同** | 本地对照 |
+
+**想验证什么改动该跑哪一项、通过线在哪：[`docs/能力与测试集映射.md`](docs/能力与测试集映射.md)。**
 
 ---
 
@@ -68,6 +73,7 @@ python -m capbench build --tasks all         # 下载并抽样（约 500 MB）
 python -m capbench check  --model my-model          # 数据/模板/端点自检
 python pred.py   --model my-model --tasks all       # → pred/my-model.jsonl
 python -m capbench ifeval --model my-model          # IFEval 走官方校验器 → results/ifeval-my-model@default.json
+python -m capbench consistency --model my-model --mode cold-warm --n 40 --max-tokens 512
 python result.py --model my-model --detail          # → result.txt + results/my-model.json
 ```
 
@@ -158,12 +164,17 @@ capbench/
 │   ├─ stats.py              标准误、配对检验
 │   ├─ client.py             OpenAI 兼容客户端
 │   ├─ ifeval.py             IFEval 封装：调 lm_eval、解析结果、并进报表
+│   ├─ ruler.py              RULER 式 NIAH 生成（长度 × 位置可控）
+│   ├─ consistency.py        逐 token 对照：冷/热、双端点
 │   └─ __main__.py           CLI：list / build / check / eval / ifeval / report / compare
 ├─ splits/                   固定划分（进版本库）：id 列表 + sha256 + 5-shot 示例
-├─ docs/tasks/               三张数据卡（官方口径、抽样、偏差）
+├─ docs/能力与测试集映射.md   能力 → 测试集 → 判据（先看这个）
+├─ docs/tasks/               四张数据卡（官方口径、抽样、偏差）
 ├─ tests/test_scoring.py     判分回归测试
 ├─ tests/test_sampling.py    抽样回归测试（均匀性 / 确定性）
 ├─ tests/test_ifeval.py      IFEval 封装测试（命令拼装 / 结果解析）
+├─ tests/test_ruler.py       RULER 题结构（针位置 / 覆盖 / 判分）
+├─ tests/test_consistency.py 逐 token 比对与汇总
 ├─ data/                     （不进版本库）构建产物
 └─ results/                  聚合结果 + leaderboard.csv
 ```
@@ -227,6 +238,7 @@ seed 新建，`randrange` 退化成 `floor(u·n)`，只覆盖每格前 `per_cell
 
 | 版本 | 变更 |
 |---|---|
+| 2.4.0 | 新增 `ruler`（RULER 式 NIAH，长度 × 位置可控）与 `consistency`（逐 token 无损性对照）；新增 `docs/能力与测试集映射.md`；修 Windows GBK 控制台下 `⚠` 导致整批中断、`report` 里变量遮蔽 |
 | 2.3.0 | 移除 `gpqa_diamond`：无官方判分器、数据 gated、SE 最大（3.6pp）。题目 1439 → 1241，`splits/`、`data/`、模板与数据卡同步删除；自由作答判分路径一并移除 |
 | 2.2.2 | IFEval 输出上限只信本轮记录（`--from-results` 不再拿当前配置的 `max_tokens` 顶替）；四项指标缺一项即拒绝合并 |
 | 2.2.1 | 修 IFEval 封装三处隐患：版本改从被调用 CLI 的环境取（取不到记 `unknown`）；每轮独立运行目录、题数与指标同源；侧车文件名加 `@revision`，base/fp8 不再互相覆盖 |

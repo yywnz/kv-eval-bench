@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "如果使用本基准，请按以下格式引用。"
-title: "CapBench: A Three-Task Capability Benchmark for Inference-Side Validation"
-version: "2.3.0"
+title: "CapBench: A Four-Task Capability Benchmark for Inference-Side Validation"
+version: "2.4.0"
 date-released: "2026-11-25"
 license: MIT
 type: software

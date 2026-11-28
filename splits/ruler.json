@@ -1,0 +1,32 @@
+{
+ "task": "ruler",
+ "seed": 2026,
+ "n": 24,
+ "sha256_16": "397579c4231f4a80",
+ "ids": [
+  "ruler-174a888880",
+  "ruler-2aca26aa76",
+  "ruler-2d226456d3",
+  "ruler-300581fe75",
+  "ruler-39f7644c72",
+  "ruler-45530a3870",
+  "ruler-4fa59dc773",
+  "ruler-69fd5e87b5",
+  "ruler-73b9044801",
+  "ruler-7ac18bb832",
+  "ruler-7fb5410713",
+  "ruler-8388c3c8b9",
+  "ruler-8652697441",
+  "ruler-9086666324",
+  "ruler-a5e3f59d5e",
+  "ruler-a603e9bfdf",
+  "ruler-ae8d29ada3",
+  "ruler-ccb28d892a",
+  "ruler-d8fc0e21c1",
+  "ruler-da29b6cc54",
+  "ruler-dad34493c1",
+  "ruler-dcce6301bb",
+  "ruler-ead1b6354f",
+  "ruler-f542339a83"
+ ]
+}

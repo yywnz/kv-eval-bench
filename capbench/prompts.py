@@ -40,6 +40,11 @@ def fmt_mmlu_options(options: Iterable[str]) -> str:
 def template_name(shape: str, variant: str) -> str:
     if shape == "mmlu":
         return "mmlu_pro_5shot" if variant not in ("0shot", "zs") else "mmlu_pro_0shot"
+    if shape == "ruler":
+        name = "ruler_0shot.txt"
+        return _sub(_read(name, directory), context=row.get("context") or "",
+                    question=question).strip(), name
+
     if shape == "longctx":
         return f"longctx_{variant}.txt"
     return {
@@ -78,6 +83,11 @@ def render(row: dict, shape: str, variant: str = "0shot",
         parts.append(_sub(q_tpl, question=question,
                           options=fmt_mmlu_options(options)))
         return "\n\n".join(parts).strip() + "\n", f"mmlu_pro_{n_shot}shot"
+
+    if shape == "ruler":
+        name = "ruler_0shot.txt"
+        return _sub(_read(name, directory), context=row.get("context") or "",
+                    question=question).strip(), name
 
     if shape == "longctx":
         name = f"longctx_{variant}.txt"

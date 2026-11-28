@@ -108,6 +108,27 @@ def margin_of(correct: str, lp: dict[str, float]) -> float | None:
     return round(lp[correct] - max(wrongs), 4) if wrongs else None
 
 
+def extract_number(text: str) -> str | None:
+    """取正文里**最后一个**数字串，去掉千分位。
+
+    结论在末尾，所以取最后一个；思考模型会把中间量也写出来，
+    取第一个几乎必错。
+    """
+    nums = re.findall(r"\d[\d,]*", _clean(text))
+    if not nums:
+        return None
+    return nums[-1].replace(",", "")
+
+
+def score_numeric(resp: dict, answer: str) -> dict:
+    cand = extract_number(resp.get("text") or "")
+    gold = re.sub(r"\D", "", str(answer))
+    if cand is None:
+        return {"correct": False, "chosen": None, "parse": "none", "official": False}
+    return {"correct": cand == gold, "chosen": cand, "parse": "number",
+            "official": True}
+
+
 def score(row: dict, resp: dict) -> dict:
     """按任务分派，返回 {correct, chosen, parse, official, margin?}。"""
     task = row.get("task", "")
@@ -117,6 +138,9 @@ def score(row: dict, resp: dict) -> dict:
         # 约束是否满足只有官方 verifier 能判，这里只存原文
         return {"correct": None, "chosen": (resp.get("text") or "")[:200],
                 "parse": "external", "official": False}
+
+    if kind == "numeric":
+        return score_numeric(resp, row.get("answer", ""))
 
     if kind == "mc":
         opts = row.get("options") or []

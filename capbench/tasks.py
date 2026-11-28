@@ -222,6 +222,16 @@ _reg(name="mmlu_pro", dimension="知识", display="MMLU-Pro",
      note="官方为 5-shot CoT，示例取自 validation 集，每类 5 条",
      build=build_mmlu_pro, doc="docs/tasks/mmlu-pro.md")
 
+_reg(name="ruler", dimension="长上下文检索", display="RULER-style NIAH",
+     source="自建（干草堆取自 LongBench v2 文档）", source_url="https://github.com/NVIDIA/RULER",
+     license="MIT（生成逻辑）", kind="numeric", shape="ruler",
+     metric="accuracy，按长度 × 位置分组看衰减",
+     judge="local",
+     decode={"temperature": 0.0, "max_tokens": 128},
+     note="长度可控的多针检索：唯一能画出「有效窗口」衰减曲线的项",
+     build=lambda seed, **kw: __import__("capbench.ruler", fromlist=["build_ruler"]).build_ruler(seed, **kw),
+     doc="docs/tasks/ruler.md")
+
 _reg(name="longbench_v2", dimension="长上下文", display="LongBench v2",
      source="zai-org/LongBench-v2", source_url="https://huggingface.co/datasets/zai-org/LongBench-v2",
      license="MIT", kind="mc", shape="longctx",
@@ -243,4 +253,4 @@ def build_one(name: str, seed: int, **params) -> tuple[list[dict], dict]:
 
 
 # 固定顺序，CLI 与 pred.py 共用
-ORDER = ["ifeval", "mmlu_pro", "longbench_v2"]
+ORDER = ["ifeval", "mmlu_pro", "longbench_v2", "ruler"]

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import __version__
 from . import config as cfgmod
+from . import consistency as consmod
 from . import ifeval as ifevalmod
 from .client import Client, Model
 from .prompts import render
@@ -119,6 +120,9 @@ def cmd_build(args):
             kwargs["limit"] = args.limit
         if name == "longbench_v2":
             kwargs["per_cell"] = args.per_cell
+        if name == "ruler":
+            kwargs["data_dir"] = data
+            kwargs["repeat"] = args.ruler_repeat
         try:
             rows, meta = build_one(name, args.seed, **kwargs)
         except Exception as e:
@@ -310,6 +314,59 @@ def cmd_ifeval(args):
     return 0
 
 
+# ---------------------------------------------------------------- consistency
+
+def cmd_consistency(args):
+    """逐 token 对照两个部署/两种缓存状态，判据是 100% 相同。"""
+    m = _model(args)
+    task = args.consistency_task
+    prompts = consmod._mkprompts(m, task, args.n, Path(args.data),
+                                 Path(args.prompts), Path(args.splits),
+                                 args.prompt_variant)
+    print(f"{m.name}  任务={task}  题数={len(prompts)}  "
+          f"max_tokens={m.max_tokens}  mode={args.mode}")
+
+    if args.mode == "paint":
+        mode_name = "单侧采样（不比较）"
+        a = consmod.run(m, prompts)
+        s = consmod.summarize(a, a, "run", "run")
+        s["identical_rate"] = None
+        print()
+        print("只采样，不做一致性判定。")
+    elif args.mode == "cold-warm":
+        mode_name = "冷 → 热（同端点）"
+        a = consmod.run(m, prompts)   # 冷：缓存为空
+        b = consmod.run(m, prompts)   # 热：上一轮已把前缀灌进缓存
+        s = consmod.summarize(a, b, "冷跑", "热跑")
+        consmod.print_report(s)
+    elif args.mode == "endpoints":
+        if not args.compare_url:
+            sys.exit("--mode endpoints 需要 --compare-url")
+        mode_name = "端点 A → 端点 B"
+        a = consmod.run(m, prompts)
+        m2 = cfgmod.resolve(m.name, cfgmod.load(Path(args.config)),
+                            base_url=args.compare_url, revision=args.revision,
+                            max_tokens=args.max_tokens, thinking=args.thinking,
+                            extra_body=args.extra_body)
+        b = consmod.run(m2, prompts)
+        s = consmod.summarize(a, b, args.base_url or m.base_url, m2.base_url)
+        consmod.print_report(s)
+    else:
+        sys.exit(f"未知 mode {args.mode}")
+
+    out = Path(args.out) if args.out else (
+        ROOT / "results" / f"consistency-{m.name}-{args.mode}.json")
+    payload = {"model": m.name, "task": task, "mode": args.mode,
+               "mode_note": mode_name, "n": args.n,
+               "max_tokens": m.max_tokens, "ran_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+               "summary": {k: v for k, v in s.items() if k != "per_item"},
+               "per_item": s.get("per_item")}
+    consmod.write_json(out, payload)
+    print()
+    print(f"-> {out}")
+    return 0 if s.get("identical_rate") in (None, 100.0) else 1
+
+
 # ---------------------------------------------------------------- report
 
 def _load(p: Path) -> list[dict]:
@@ -394,6 +451,37 @@ def cmd_report(args):
         print(f"\n⚠ {s['task']}: {s['over_ctx']}/{s['n']} 题超出 maxlen={s['maxlen']}，"
               f"未参与计分；有效评分 {s['n_scored']} 题。"
               f"报数必须同时给出超窗数与 maxlen。")
+
+    rr = [r for r in by_task.get("ruler", []) if "error" not in r
+          and not r.get("skipped") and r.get("scored")]
+    if rr:
+        print()
+        print("[ruler] 长度 × 位置 准确率（%）—— 看趋势，不要解读单格")
+        cells: dict = {}
+        for r in rr:
+            md = r.get("meta") or {}
+            key = (str(md.get("variant")), int(md.get("target_len") or 0))
+            cells.setdefault(key, {}).setdefault(int(md.get("pos_pct") or 0),
+                                                 []).append(bool(r["correct"]))
+        depths = sorted({d for v in cells.values() for d in v})
+        print(f"  {'variant':<10}{'len':>6}" + "".join(f"{f'{d}%':>8}" for d in depths)
+              + f"{'合计':>9}")
+        by_len: dict = {}
+        for (var, L), per in sorted(cells.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+            row, allx = [], []
+            for d in depths:
+                xs = per.get(d) or []
+                allx += xs
+                row.append(f"{sum(xs) / len(xs) * 100:>7.0f}" if xs else f"{'-':>8}")
+            by_len.setdefault(L, []).extend(allx)
+            print(f"  {var:<10}{L // 1024:>5}k" + "".join(row)
+                  + f"{sum(allx) / len(allx) * 100:>8.0f}")
+        print("  按长度聚合：" + "   ".join(
+            f"{L // 1024}k {sum(v) / len(v) * 100:.0f}%"
+            for L, v in sorted(by_len.items())))
+        mins = min(len(v) for per in cells.values() for v in per.values())
+        print(f"  衰减判据：相邻长度档的掉幅是否显著大于基线；"
+              f"单格仅 {mins} 题，别拿 0%/100% 当结论。")
 
     if args.detail:
         for s in summaries:
@@ -495,7 +583,21 @@ def cmd_compare(args):
 
 # ---------------------------------------------------------------- main
 
+def _utf8_stdout() -> None:
+    """Windows 控制台默认 GBK，遇到 ⚠ / ✓ 会抛 UnicodeEncodeError 把整批中断。
+
+    改成 utf-8 + errors=replace：能显示就显示，不能显示就替换成 ?，
+    绝不让一个提示符弄死一次跑了半小时的评测。
+    """
+    for s_ in (sys.stdout, sys.stderr):
+        try:
+            s_.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
+    _utf8_stdout()
     ap = argparse.ArgumentParser(prog="capbench", description="CapBench —— 三任务能力评测集")
     ap.add_argument("--version", action="version", version=f"capbench {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -526,6 +628,8 @@ def main(argv=None):
     b.add_argument("--seed", type=int, default=DEFAULT_SEED)
     b.add_argument("--limit", type=int, default=None, help="mmlu 题量上限")
     b.add_argument("--per-cell", type=int, default=14, help="longbench 每格上限")
+    b.add_argument("--ruler-repeat", type=int, default=1,
+                   help="ruler 每格重复次数；出曲线建议 4")
     b.add_argument("--exemplars", type=int, default=5, help="mmlu 每类 few-shot 条数")
     b.add_argument("--fresh", action="store_true")
     b.set_defaults(fn=cmd_build)
@@ -555,6 +659,19 @@ def main(argv=None):
                    help="不运行，直接解析已有的 lm_eval 输出目录")
     f.add_argument("--dry-run", action="store_true", help="只打印命令")
     f.set_defaults(fn=cmd_ifeval)
+
+    cc = sub.add_parser("consistency", help="逐 token 对照缓存路径 / PD 传输")
+    common(cc)
+    cc.add_argument("--mode", choices=["cold-warm", "endpoints", "paint"],
+                    default="cold-warm")
+    cc.add_argument("--compare-url", default=None, help="endpoints 模式的第二个端点")
+    cc.add_argument("--n", type=int, default=40)
+    cc.add_argument("--out", default=None)
+    # 复用已有参数名会与 common 冲突，这里单独命名
+    cc.add_argument("--consistency-task", dest="consistency_task",
+                    default="mmlu_pro",
+                    choices=["mmlu_pro", "longbench_v2", "ruler"])
+    cc.set_defaults(fn=cmd_consistency)
 
     r = sub.add_parser("report", help="汇总 pred/ 出表格")
     common(r)
